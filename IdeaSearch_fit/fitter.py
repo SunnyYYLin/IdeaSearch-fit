@@ -257,7 +257,7 @@ class IdeaSearchFitter:
         
         self._metric_type = "chi squared" if fit_with_errors else "mean square error"
         self._metric_func = chi_squared if fit_with_errors else mean_squared_error
-        self._metric_input = {"ground_truth_data": self._y} if fit_with_errors else \
+        self._metric_input = {"ground_truth_data": self._y} if not fit_with_errors else \
             {"ground_truth_data": self._y, "errors": self._error}
         
         
@@ -279,7 +279,7 @@ class IdeaSearchFitter:
         self._naive_linear_idea: str = " + ".join([
             f"param{i + 1} * x{i + 1}"
             for i in range(self._input_dim)
-        ])
+        ] + [f"param{self._input_dim + 1}"])
         
         
     def _set_functions(

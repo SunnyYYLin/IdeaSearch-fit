@@ -16,6 +16,6 @@ setup(
     },
     python_requires = ">=3.8",
     install_requires = [
-        "pywheels>=0.6.6",
+        "pywheels>=0.6.5",
     ],
 )

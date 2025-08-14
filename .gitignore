@@ -5,3 +5,6 @@ dist
 dist/**
 *.egg-info
 *.egg-info/**
+api_keys.json
+demo/database
+demo/database/**
