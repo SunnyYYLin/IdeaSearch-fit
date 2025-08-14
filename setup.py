@@ -16,7 +16,6 @@ setup(
     },
     python_requires = ">=3.8",
     install_requires = [
-        "pywheels>=0.6.5",
-        "IdeaSearch>=0.0.4",
+        "pywheels>=0.6.6",
     ],
 )
