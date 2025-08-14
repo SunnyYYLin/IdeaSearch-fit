@@ -22,6 +22,11 @@ def main():
     # prompt、评估函数和 initial_ideas 都外包给 ideasearch_fitter
     ideasearcher.bind_helper(ideasearch_fitter)
     
+    # 手动设置一下初始 ideas
+    ideasearcher.add_initial_ideas(
+        ideasearch_fitter.initial_ideas
+    )
+    
     # 在 ideasearcher 中设置其它必要和可选参数
     ideasearcher.set_program_name("TransferFunction")
     ideasearcher.set_database_path(f"demo{seperator}database")
@@ -49,11 +54,6 @@ def main():
         1.1,
     ])
     ideasearcher.set_generation_bonus(3.0)
-    
-    # 手动设置一下初始 ideas
-    ideasearcher.add_initial_ideas(
-        ideasearch_fitter.initial_ideas
-    )
     
     island_num = 4
     cycle_num = 20
