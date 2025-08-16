@@ -1,5 +1,6 @@
 import os
 import numexpr
+import warnings
 import numpy as np
 from numpy import ndarray
 from typing import Dict
@@ -8,8 +9,9 @@ from typing import Tuple
 from typing import Literal
 from typing import Callable
 from typing import Optional
+from threading import Lock
 from numpy.random import default_rng
-from pywheels.math_funcs import chi_squared
+from pywheels.math_funcs import reduced_chi_squared
 from pywheels.math_funcs import mean_squared_error
 from pywheels.blueprints.ansatz import Ansatz
 from pywheels.blueprints.ansatz import ansatz_docstring
@@ -21,6 +23,12 @@ __all__ = [
 ]
 
 
+_numexpr_supported_functions: List[str] = [
+    "sin", "cos", "tan", "arcsin", "arccos", "arctan", "sinh", 
+    "cosh", "tanh", "log", "log10", "exp", "sqrt", "abs", 
+]
+
+
 class IdeaSearchFitter:
     
     # ------------------------- IdeaSearchFitter初始化 -------------------------
@@ -29,41 +37,42 @@ class IdeaSearchFitter:
         self,
         data: Optional[Dict[str, ndarray]] = None,
         data_path: Optional[str] = None,
-        functions: List[str] = ["sin", "cos", "exp", "log", "sqrt", "power"],
+        functions: List[str] = _numexpr_supported_functions,
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 0.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
+        auto_rescale: bool = False,
+        adjust_degrees_of_freedom: bool = False,
         enable_mutation: bool = False,
         enable_crossover: bool = False,
         seed: Optional[int] = None,
     )-> None:
         
         self._random_generator = default_rng(seed)
-
-        self._initialize_data(
-            data = data,
-            data_path = data_path,
-        )
         
-        self._set_variables()
+        self._auto_rescale = auto_rescale
+        self._adjust_degrees_of_freedom = adjust_degrees_of_freedom
         
-        self._set_functions(
-            functions = functions,
-        )
+        self._initialize_data(data, data_path)
         
-        self._set_prompts()
+        self._set_variables(); self._set_functions(functions); self._set_prompts()
         
+        self._set_naive_linear_idea(); self._set_initial_ideas()
+        
+        self._build_numexpr_dict()
         self._build_metric_mapper(
             baseline_metric_value = baseline_metric_value,
             good_metric_value = good_metric_value,
             metric_mapping = metric_mapping,
         )
         
-        self._set_initial_ideas()
-        
         # hijack action `mutation_func` and `crossover_func` when disabled
         if not enable_mutation: self.mutation_func = None # type: ignore
         if not enable_crossover: self.crossover_func = None # type: ignore
+        
+        self._best_fit: Optional[str] = None
+        self._best_metric_value: float = float("inf")
+        self._best_fit_lock: Lock = Lock()
     
     # ----------------------------- 外部动作 -----------------------------
 
@@ -81,12 +90,21 @@ class IdeaSearchFitter:
             best_params_msg = ""
             
             for index, best_param in enumerate(best_params):
-                best_params_msg += f"  param{index+1}: {best_param:.4g}"
+                best_params_msg += f"  param{index+1}: {best_param:.8g}"
+                
+            self._update_best_fit(
+                expression = idea,
+                best_params = best_params,
+                best_metric_value = best_metric_value,
+            )
+            
+            metric_type = "reduced chi squared" \
+                if (self._error is not None) else "mean square error"
                 
             score = self._metric_mapper(best_metric_value)
             info = (
                 f"得分：{score:.2f}\n"
-                f"{self._metric_type}：{best_metric_value:.8g}\n"
+                f"{metric_type}：{best_metric_value:.8g}\n"
                 f"最优参数：{best_params_msg}"
             )
             
@@ -157,6 +175,23 @@ class IdeaSearchFitter:
 
         except Exception as _:
             return parent1
+        
+        
+    def get_best_fit(
+        self,
+    )-> str:
+        
+        best_fit = self._best_fit
+        
+        if best_fit is None:
+            
+            raise RuntimeError(
+                translate(
+                    "【IdeaSearchFitter】无法返回最佳拟合函数，请先尝试运行 IdeaSearch！"
+                )
+            )
+            
+        return best_fit
     
     # ----------------------------- 内部动作 -----------------------------
     
@@ -252,13 +287,6 @@ class IdeaSearchFitter:
             raise RuntimeError(translate(
                 "【IdeaSearchFitter】初始化时出错：数据形状不合要求，输入数据、输出数据与误差（若有）应形状相同！"
             ))
-            
-        fit_with_errors: bool = (self._error is not None)
-        
-        self._metric_type = "chi squared" if fit_with_errors else "mean square error"
-        self._metric_func = chi_squared if fit_with_errors else mean_squared_error
-        self._metric_input = {"ground_truth_data": self._y} if not fit_with_errors else \
-            {"ground_truth_data": self._y, "errors": self._error}
         
         
     def _set_variables(
@@ -270,24 +298,36 @@ class IdeaSearchFitter:
         self._variables: List[str] = [
             f"x{i + 1}" for i in range(self._input_dim)
         ]
-        
-        self._numexpr_local_dict: Dict[str, ndarray] = {
-            f"x{i + 1}": self._x[:, i]
-            for i in range(self._input_dim)
-        }
-        
-        self._naive_linear_idea: str = " + ".join([
-            f"param{i + 1} * x{i + 1}"
-            for i in range(self._input_dim)
-        ] + [f"param{self._input_dim + 1}"])
-        
-        
+    
+    
     def _set_functions(
         self,
         functions: List[str],
     )-> None:
         
-        self._functions: List[str] = functions
+        supported_functions: List[str] = []
+        
+        for function in functions:
+            
+            if function in _numexpr_supported_functions:
+                supported_functions.append(function)
+            
+            else:
+                warnings.warn(
+                    translate(
+                        "IdeaSearch-fit 依赖 Python 库 numexpr，而函数 %s 不受 numexpr 支持，已舍去！"
+                    ) % (function)
+                )
+                
+        if not supported_functions:
+            
+            raise RuntimeError(
+                translate(
+                    "【IdeaSearchFitter】初始化时出错：没有可用的函数！"
+                )
+            )
+        
+        self._functions: List[str] = supported_functions   
     
     
     def _set_prompts(
@@ -328,6 +368,88 @@ class IdeaSearchFitter:
         )
         
         
+    def _set_naive_linear_idea(
+        self,
+    )-> None:
+        
+        self._naive_linear_idea: str = " + ".join([
+            f"param{i + 1} * x{i + 1}"
+            for i in range(self._input_dim)
+        ] + [f"param{self._input_dim + 1}"])
+        
+        
+    def _set_initial_ideas(
+        self,
+    )-> None:
+        
+        self.initial_ideas: List[str] = [self._naive_linear_idea]
+    
+     
+    def _build_numexpr_dict(
+        self,
+    )-> None:
+        
+        self._numexpr_local_dict: Dict[str, ndarray] = {
+            f"x{i + 1}": self._x[:, i]
+            for i in range(self._input_dim)
+        }
+            
+            
+    def _optimize_idea_under_metric(
+        self,
+        idea: str,
+    )-> Tuple[List[float], float]:
+        
+        ansatz = Ansatz(
+            expression = idea,
+            variables = self._variables,
+            functions = self._functions,
+        )
+        
+        ansatz_param_num = ansatz.get_param_num()
+
+        def numeric_ansatz_user(
+            numeric_ansatz: str
+        )-> float:
+            
+            y_pred = numexpr.evaluate(
+                ex = numeric_ansatz, 
+                local_dict = self._numexpr_local_dict,
+            )
+            
+            if self._error is not None:
+                
+                metric_value = reduced_chi_squared(
+                    predicted_data = y_pred,
+                    ground_truth_data = self._y,
+                    errors = self._error,
+                    adjust_degrees_of_freedom = self._adjust_degrees_of_freedom,
+                    param_num = ansatz_param_num,
+                )
+                
+            else:
+                
+                metric_value = mean_squared_error(
+                    predicted_data = y_pred,
+                    ground_truth_data = self._y,
+                    adjust_degrees_of_freedom = self._adjust_degrees_of_freedom,
+                    param_num = ansatz_param_num,   
+                )
+            
+            return metric_value
+        
+        natural_param_range = (-10.0, 10.0)
+                
+        best_params, best_metric_value = ansatz.apply_to(
+            numeric_ansatz_user = numeric_ansatz_user,
+            param_ranges = [natural_param_range] * ansatz_param_num,
+            trial_num = 5,
+            mode = "optimize",
+        )
+        
+        return best_params, best_metric_value
+    
+    
     def _build_metric_mapper(
         self,
         baseline_metric_value: Optional[float],
@@ -361,49 +483,25 @@ class IdeaSearchFitter:
                     0.0
                 )
             )
-            
-            
-    def _optimize_idea_under_metric(
-        self,
-        idea: str,
-    )-> Tuple[List[float], float]:
-        
-        ansatz = Ansatz(
-            expression = idea,
-            variables = self._variables,
-            functions = self._functions,
-        )
 
-        def numeric_ansatz_user(
-            numeric_ansatz: str
-        )-> float:
-            
-            y_pred = numexpr.evaluate(
-                ex = numeric_ansatz, 
-                local_dict = self._numexpr_local_dict,
-            )
-                
-            metric_value = self._metric_func(
-                predicted_data = y_pred,
-                **self._metric_input
-            )
-            
-            return metric_value
-        
-        natural_param_range = (-10.0, 10.0)
-                
-        best_params, best_metric_value = ansatz.apply_to(
-            numeric_ansatz_user = numeric_ansatz_user,
-            param_ranges = [natural_param_range] * ansatz.get_param_num(),
-            trial_num = 5,
-            mode = "optimize",
-        )
-        
-        return best_params, best_metric_value
-        
-    
-    def _set_initial_ideas(
+
+    def _update_best_fit(
         self,
+        expression: str,
+        best_params: List[float],
+        best_metric_value: float,
     )-> None:
         
-        self.initial_ideas: List[str] = [self._naive_linear_idea]
+        with self._best_fit_lock:
+            
+            if best_metric_value >= self._best_metric_value: return
+            
+            self._best_metric_value = best_metric_value
+            
+            ansatz = Ansatz(
+                expression = expression,
+                variables = self._variables,
+                functions = self._functions, 
+            )
+            
+            self._best_fit = ansatz.reduce_to_numeric_ansatz(best_params)
