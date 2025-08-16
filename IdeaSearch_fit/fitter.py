@@ -37,11 +37,11 @@ class IdeaSearchFitter:
         self,
         data: Optional[Dict[str, ndarray]] = None,
         data_path: Optional[str] = None,
+        existing_fit: str = "0.0",
         functions: List[str] = _numexpr_supported_functions,
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 0.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
-        auto_rescale: bool = False,
         adjust_degrees_of_freedom: bool = False,
         enable_mutation: bool = False,
         enable_crossover: bool = False,
@@ -50,10 +50,11 @@ class IdeaSearchFitter:
         
         self._random_generator = default_rng(seed)
         
-        self._auto_rescale = auto_rescale
+        self._existing_fit = existing_fit
         self._adjust_degrees_of_freedom = adjust_degrees_of_freedom
         
         self._initialize_data(data, data_path)
+        self._process_data()
         
         self._set_variables(); self._set_functions(functions); self._set_prompts()
         
@@ -83,7 +84,7 @@ class IdeaSearchFitter:
 
         try:
 
-            best_params, best_metric_value = self._optimize_idea_under_metric(
+            best_params, best_metric_value = self._get_idea_optimal_result(
                 idea = idea,
             )
             
@@ -191,6 +192,8 @@ class IdeaSearchFitter:
                 )
             )
             
+        if self._existing_fit != "0.0": best_fit = self._existing_fit + best_fit
+                        
         return best_fit
     
     # ----------------------------- 内部动作 -----------------------------
@@ -200,6 +203,10 @@ class IdeaSearchFitter:
         data: Optional[Dict[str, ndarray]] = None,
         data_path: Optional[str] = None,
     )-> None:
+        
+        """
+        set self._x, self._y, self._error
+        """
         
         if (data is None and data_path is None) or \
             (data is not None and data_path is not None):
@@ -287,13 +294,36 @@ class IdeaSearchFitter:
             raise RuntimeError(translate(
                 "【IdeaSearchFitter】初始化时出错：数据形状不合要求，输入数据、输出数据与误差（若有）应形状相同！"
             ))
+            
+            
+    def _process_data(
+        self,
+    )-> None:
+        
+        """
+        set self._input_dim, self._y_remainder
+        """
+    
+        self._input_dim: int = self._x.shape[1]
+        
+        existing_fit_value: ndarray = numexpr.evaluate(
+            ex = self._existing_fit,
+            local_dict = {
+                f"x{i + 1}": self._x[:, i]
+                for i in range(self._input_dim)
+            }
+        )
+        
+        self._y_remainder: ndarray = self._y - existing_fit_value
         
         
     def _set_variables(
         self,
     )-> None:
         
-        self._input_dim: int = self._x.shape[1]
+        """
+        set self._variables
+        """
         
         self._variables: List[str] = [
             f"x{i + 1}" for i in range(self._input_dim)
@@ -304,6 +334,10 @@ class IdeaSearchFitter:
         self,
         functions: List[str],
     )-> None:
+        
+        """
+        set self._functions
+        """
         
         supported_functions: List[str] = []
         
@@ -333,6 +367,10 @@ class IdeaSearchFitter:
     def _set_prompts(
         self,
     )-> None:
+        
+        """
+        configure system_prompt, prologue_section, epilogue_section for IdeaSearcher
+        """
         
         prologue_section_variable_string = ", ".join(
             [f'"{variable}"' for variable in self._variables]
@@ -382,6 +420,10 @@ class IdeaSearchFitter:
         self,
     )-> None:
         
+        """
+        configure initial_ideas for IdeaSearcher
+        """
+        
         self.initial_ideas: List[str] = [self._naive_linear_idea]
     
      
@@ -395,7 +437,7 @@ class IdeaSearchFitter:
         }
             
             
-    def _optimize_idea_under_metric(
+    def _get_idea_optimal_result(
         self,
         idea: str,
     )-> Tuple[List[float], float]:
@@ -421,7 +463,7 @@ class IdeaSearchFitter:
                 
                 metric_value = reduced_chi_squared(
                     predicted_data = y_pred,
-                    ground_truth_data = self._y,
+                    ground_truth_data = self._y_remainder,
                     errors = self._error,
                     adjust_degrees_of_freedom = self._adjust_degrees_of_freedom,
                     param_num = ansatz_param_num,
@@ -431,7 +473,7 @@ class IdeaSearchFitter:
                 
                 metric_value = mean_squared_error(
                     predicted_data = y_pred,
-                    ground_truth_data = self._y,
+                    ground_truth_data = self._y_remainder,
                     adjust_degrees_of_freedom = self._adjust_degrees_of_freedom,
                     param_num = ansatz_param_num,   
                 )
@@ -459,7 +501,7 @@ class IdeaSearchFitter:
         
         if baseline_metric_value is None:
             
-            _, baseline = self._optimize_idea_under_metric(
+            _, baseline = self._get_idea_optimal_result(
                 idea = self._naive_linear_idea
             )
             
@@ -467,7 +509,7 @@ class IdeaSearchFitter:
             baseline = baseline_metric_value
             
         if good_metric_value is None:
-            good = baseline / 100
+            good = baseline / 10000
             
         else:
             good = good_metric_value
