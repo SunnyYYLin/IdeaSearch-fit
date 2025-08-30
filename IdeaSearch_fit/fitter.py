@@ -15,6 +15,7 @@ from pywheels.math_funcs import reduced_chi_squared
 from pywheels.math_funcs import mean_squared_error
 from pywheels.blueprints.ansatz import Ansatz
 from pywheels.blueprints.ansatz import ansatz_docstring
+from .unit_validator import validate_unit
 from .i18n import translate
 
 
@@ -38,10 +39,11 @@ class IdeaSearchFitter:
         data: Optional[Dict[str, ndarray]] = None,
         data_path: Optional[str] = None,
         existing_fit: str = "0.0",
-        functions: List[str] = _numexpr_supported_functions,
+        functions: List[str] = _numexpr_supported_functions.copy(),
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 0.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
+        auto_rescale: bool = True,
         adjust_degrees_of_freedom: bool = False,
         enable_mutation: bool = False,
         enable_crossover: bool = False,
@@ -50,8 +52,9 @@ class IdeaSearchFitter:
         
         self._random_generator = default_rng(seed)
         
-        self._existing_fit = existing_fit
-        self._adjust_degrees_of_freedom = adjust_degrees_of_freedom
+        self._existing_fit: str = existing_fit
+        self._auto_rescale: bool = auto_rescale
+        self._adjust_degrees_of_freedom: bool = adjust_degrees_of_freedom
         
         self._initialize_data(data, data_path)
         self._process_data()
@@ -102,10 +105,42 @@ class IdeaSearchFitter:
             metric_type = "reduced chi squared" \
                 if (self._error is not None) else "mean square error"
                 
+            ansatz = Ansatz(
+                expression = idea,
+                variables = self._variables,
+                functions = self._functions,
+            )
+            
+            ansatz_param_num = ansatz.get_param_num()
+            
+            y_pred_remainder_rescaled = numexpr.evaluate(
+                ex = ansatz.reduce_to_numeric_ansatz(best_params), 
+                local_dict = self._numexpr_local_dict,
+            )
+                
+            if self._error is not None:
+                
+                true_metric_value = reduced_chi_squared(
+                    predicted_data = y_pred_remainder_rescaled * self._y_rescale_factor + self._existing_fit_value,
+                    ground_truth_data = self._y,
+                    errors = self._error,
+                    adjust_degrees_of_freedom = self._adjust_degrees_of_freedom,
+                    param_num = ansatz_param_num,
+                )
+                
+            else:
+                
+                true_metric_value = mean_squared_error(
+                    predicted_data = y_pred_remainder_rescaled * self._y_rescale_factor + self._existing_fit_value,
+                    ground_truth_data = self._y,
+                    adjust_degrees_of_freedom = self._adjust_degrees_of_freedom,
+                    param_num = ansatz_param_num,   
+                )
+                
             score = self._metric_mapper(best_metric_value)
             info = (
                 f"得分：{score:.2f}\n"
-                f"{metric_type}：{best_metric_value:.8g}\n"
+                f"{metric_type}：{true_metric_value:.8g}\n"
                 f"最优参数：{best_params_msg}"
             )
             
@@ -301,12 +336,17 @@ class IdeaSearchFitter:
     )-> None:
         
         """
-        set self._input_dim, self._y_remainder
+        set self._input_dim, self._x_rescaled, self._existing_fit_value, 
+        self._y_remainder, self._y_remainder_rescaled
         """
     
         self._input_dim: int = self._x.shape[1]
         
-        existing_fit_value: ndarray = numexpr.evaluate(
+        self._x_rescale_factor = self._x.mean(0) if self._auto_rescale else 1
+        
+        self._x_rescaled: ndarray = self._x / self._x_rescale_factor
+        
+        self._existing_fit_value: ndarray = numexpr.evaluate(
             ex = self._existing_fit,
             local_dict = {
                 f"x{i + 1}": self._x[:, i]
@@ -314,7 +354,11 @@ class IdeaSearchFitter:
             }
         )
         
-        self._y_remainder: ndarray = self._y - existing_fit_value
+        self._y_remainder: ndarray = self._y - self._existing_fit_value
+        
+        self._y_rescale_factor = self._y_remainder.mean(0) if self._auto_rescale else 1
+        
+        self._y_remainder_rescaled: ndarray = self._y_remainder / self._y_rescale_factor
         
         
     def _set_variables(
@@ -432,7 +476,7 @@ class IdeaSearchFitter:
     )-> None:
         
         self._numexpr_local_dict: Dict[str, ndarray] = {
-            f"x{i + 1}": self._x[:, i]
+            f"x{i + 1}": self._x_rescaled[:, i]
             for i in range(self._input_dim)
         }
             
@@ -454,7 +498,7 @@ class IdeaSearchFitter:
             numeric_ansatz: str
         )-> float:
             
-            y_pred = numexpr.evaluate(
+            y_pred_remainder_rescaled = numexpr.evaluate(
                 ex = numeric_ansatz, 
                 local_dict = self._numexpr_local_dict,
             )
@@ -462,8 +506,8 @@ class IdeaSearchFitter:
             if self._error is not None:
                 
                 metric_value = reduced_chi_squared(
-                    predicted_data = y_pred,
-                    ground_truth_data = self._y_remainder,
+                    predicted_data = y_pred_remainder_rescaled,
+                    ground_truth_data = self._y_remainder_rescaled,
                     errors = self._error,
                     adjust_degrees_of_freedom = self._adjust_degrees_of_freedom,
                     param_num = ansatz_param_num,
@@ -472,8 +516,8 @@ class IdeaSearchFitter:
             else:
                 
                 metric_value = mean_squared_error(
-                    predicted_data = y_pred,
-                    ground_truth_data = self._y_remainder,
+                    predicted_data = y_pred_remainder_rescaled,
+                    ground_truth_data = self._y_remainder_rescaled,
                     adjust_degrees_of_freedom = self._adjust_degrees_of_freedom,
                     param_num = ansatz_param_num,   
                 )
@@ -485,8 +529,8 @@ class IdeaSearchFitter:
         best_params, best_metric_value = ansatz.apply_to(
             numeric_ansatz_user = numeric_ansatz_user,
             param_ranges = [natural_param_range] * ansatz_param_num,
-            trial_num = 5,
-            mode = "optimize",
+            trial_num = 1,
+            method = "differential-evolution",
         )
         
         return best_params, best_metric_value
@@ -514,14 +558,16 @@ class IdeaSearchFitter:
         else:
             good = good_metric_value
             
-        good_raw_score = 80.0
+        baseline_score = 20.0
+        good_score = 80.0
+        
         self._metric_mapper: Callable[[float], float] = \
             lambda metric_value: \
-            min(100.0, 
+            min(100.0,
                 max(
-                    good_raw_score * (np.log(baseline / metric_value)) / (np.log(baseline / good)) \
+                    (good_score - baseline_score) * (np.log(baseline / metric_value)) / (np.log(baseline / good)) + baseline_score \
                     if metric_mapping == "logarithm" else\
-                    good_raw_score * ((baseline - metric_value) / (baseline - good)), 
+                    (good_score - baseline_score) * ((baseline - metric_value) / (baseline - good)) + baseline_score,
                     0.0
                 )
             )

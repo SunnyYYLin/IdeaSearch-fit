@@ -1,10 +1,7 @@
 __pycache__
-build
-build/**
-dist
-dist/**
-*.egg-info
-*.egg-info/**
+build/
+dist/
+*.egg-info/
 api_keys.json
-demo/database
-demo/database/**
+demo/database/
+venv/
