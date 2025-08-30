@@ -47,7 +47,7 @@ class IdeaSearchFitter:
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 20.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
-        auto_rescale: bool = True,
+        auto_rescale: bool = False,
         adjust_degrees_of_freedom: bool = False,
         enable_mutation: bool = False,
         enable_crossover: bool = False,
