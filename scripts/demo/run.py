@@ -12,15 +12,15 @@ def main():
         # 参数 data 和 data_path 选一个填入
         # 若选 data_path ，文件应为 .npz 格式，且 load 后同样含有键 `x`，`y` 和 `error` （可选）
         data = {
-            "x": (x := np.random.uniform(0, 2 * np.pi, (1000, 2))),
-            "y": (2 * np.sin(x[:, 0]) + 3 * np.cos(x[:, 1]))\
+            "x": (x := np.random.uniform(1, 10, (1000, 1))),
+            "y": (5 * np.exp(-(x - 5)**2 / (2 * 3**2)))\
                 # + (noise := np.random.normal(0, 0.1, size = 1000)),
             # "error": np.abs(noise) * 1.5,
         }
     )
     
     # 首先设置数据库路径，ideasearcher 对文件系统的一切操作都会在数据库中进行
-    ideasearcher.set_database_path(f"demo{seperator}database")
+    ideasearcher.set_database_path(f"scripts{seperator}demo{seperator}database")
     
     # 绑定 ideasearch_fitter
     # prompt、评估函数和 initial_ideas 都会外包给 ideasearch_fitter

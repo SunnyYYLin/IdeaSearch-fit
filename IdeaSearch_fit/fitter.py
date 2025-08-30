@@ -40,7 +40,11 @@ class IdeaSearchFitter:
         data_path: Optional[str] = None,
         existing_fit: str = "0.0",
         functions: List[str] = _numexpr_supported_functions.copy(),
-        baseline_metric_value: Optional[float] = None, # metric value corresponding to score 0.0
+        perform_unit_validation: bool = False,
+        variable_names: Optional[List[str]] = None,
+        variable_units: Optional[List[str]] = None,
+        output_unit: Optional[str] = None,
+        baseline_metric_value: Optional[float] = None, # metric value corresponding to score 20.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
         auto_rescale: bool = True,
@@ -50,16 +54,28 @@ class IdeaSearchFitter:
         seed: Optional[int] = None,
     )-> None:
         
+        self._preflight_check(
+            data = data,
+            data_path = data_path,
+            perform_unit_validation = perform_unit_validation,
+            variable_names = variable_names,
+            variable_units = variable_units,
+            output_unit = output_unit,
+        )
+        
         self._random_generator = default_rng(seed)
         
         self._existing_fit: str = existing_fit
+        self._perform_unit_validation: bool = perform_unit_validation
         self._auto_rescale: bool = auto_rescale
         self._adjust_degrees_of_freedom: bool = adjust_degrees_of_freedom
         
         self._initialize_data(data, data_path)
         self._process_data()
         
-        self._set_variables(); self._set_functions(functions); self._set_prompts()
+        self._set_variables(variable_names, variable_units)
+        self._set_functions(functions); self._set_prompts()
+        self._output_unit: Optional[str] = output_unit
         
         self._set_naive_linear_idea(); self._set_initial_ideas()
         
@@ -86,6 +102,30 @@ class IdeaSearchFitter:
     )-> Tuple[float, Optional[str]]:
 
         try:
+            
+            # 先利用 Ansatz 的 _check_format 动作初步检查一下
+            Ansatz(
+                expression = idea,
+                variables = self._variables,
+                functions = self._functions,
+            )
+            
+            if self._perform_unit_validation:
+                
+                assert self._output_unit is not None
+                assert self._variable_units is not None
+            
+                unit_correctness, unit_validation_info = validate_unit(
+                    expression = idea,
+                    expression_unit = self._output_unit,
+                    variable_names = self._variables,
+                    variable_units = self._variable_units,
+                )
+                
+                if not unit_correctness:
+                    score = 0.0
+                    info = f"拟设量纲错误！具体信息：{unit_validation_info}"
+                    return score, info
 
             best_params, best_metric_value = self._get_idea_optimal_result(
                 idea = idea,
@@ -233,15 +273,15 @@ class IdeaSearchFitter:
     
     # ----------------------------- 内部动作 -----------------------------
     
-    def _initialize_data(
+    def _preflight_check(
         self,
-        data: Optional[Dict[str, ndarray]] = None,
-        data_path: Optional[str] = None,
+        data: Optional[Dict[str, ndarray]],
+        data_path: Optional[str],
+        perform_unit_validation: bool = False,
+        variable_names: Optional[List[str]] = None,
+        variable_units: Optional[List[str]] = None,
+        output_unit: Optional[str] = None,
     )-> None:
-        
-        """
-        set self._x, self._y, self._error
-        """
         
         if (data is None and data_path is None) or \
             (data is not None and data_path is not None):
@@ -250,6 +290,24 @@ class IdeaSearchFitter:
                 "【IdeaSearchFitter】初始化时出错：应在 data 与 data_path 间选择一个参数传入！"
             ))
             
+        if perform_unit_validation and \
+            (variable_names is None or variable_units is None or output_unit is None):
+                
+            raise ValueError(translate(
+                "【IdeaSearchFitter】初始化时出错：单位检查开启时必须传入 variable_names 、 variable_units 和 output_unit！"
+            ))
+    
+    
+    def _initialize_data(
+        self,
+        data: Optional[Dict[str, ndarray]],
+        data_path: Optional[str],
+    )-> None:
+        
+        """
+        set self._x, self._y, self._error
+        """
+         
         self._x: ndarray
         self._y: ndarray
         self._error: Optional[ndarray] = None
@@ -363,6 +421,8 @@ class IdeaSearchFitter:
         
     def _set_variables(
         self,
+        variable_names: Optional[List[str]] = None,
+        variable_units: Optional[List[str]] = None,
     )-> None:
         
         """
@@ -371,7 +431,9 @@ class IdeaSearchFitter:
         
         self._variables: List[str] = [
             f"x{i + 1}" for i in range(self._input_dim)
-        ]
+        ] if variable_names is None else variable_names
+        
+        self._variable_units: Optional[List[str]] = variable_units
     
     
     def _set_functions(
@@ -424,6 +486,27 @@ class IdeaSearchFitter:
             [f'"{function}"' for function in self._functions]
         )
         
+        variables_info: str
+        
+        if self._perform_unit_validation:
+            
+            assert self._variable_units is not None
+            assert self._output_unit is not None
+            
+            variables_info = (
+                f"另外， {', '.join(self._variables)} 是物理量，"
+                f"单位分别为 {', '.join(self._variable_units)} ，"
+                "而所有的 param 都是无量纲（单位为 1 ）的；"
+                f"你要搜寻一个单位为 {self._output_unit} 的拟设，请务必确保量纲的正确性。"
+            )
+        
+        else:
+        
+            variables_info = (
+                f"另外，由于 {', '.join(self._variables)} 实际上是物理量，"
+                f"我们鼓励你在将 {', '.join(self._variables)} 设为函数自变量前设置一个参数与之相乘。\n"
+            )
+        
         self.system_prompt: str = (
             "你是一个严格遵循指令、擅长根据已有拟设结构生成具有创新性且符合格式的新拟设表达式的实验科学家。"
             "你会观察已有拟设的表现，从中总结规律，生成既合法又可能更优的 expression 表达式。"
@@ -441,8 +524,7 @@ class IdeaSearchFitter:
         self.epilogue_section: str = (
             "分析以上示例时，如果你发现某个参数的最优值始终非常接近零，说明它在该任务中作用不大，"
             "你可以考虑在新的拟设中去除这一参数，以提高结构紧凑性与有效性。\n"
-            f"另外，由于 {', '.join(self._variables)} 实际上是物理量，"
-            f"我们鼓励你在 {', '.join(self._variables)} 前设置一个参数与之相乘，然后再代入函数。\n"
+            f"{variables_info}"
             "最后，如果遇到非独立参数（例如 param1 * (param2 * x + param3)），"
             "请将其整理为 param1 * x + param2 的形式，让各个参数尽量独立。\n"
             "现在，请你开始生成 expression 表达式。"
