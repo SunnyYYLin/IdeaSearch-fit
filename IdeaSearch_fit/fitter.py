@@ -72,6 +72,7 @@ class IdeaSearchFitter:
         
         self._initialize_data(data, data_path)
         self._process_data()
+        self._analyze_data()
         
         self._set_variables(variable_names, variable_units)
         self._set_functions(functions); self._set_prompts()
@@ -103,8 +104,7 @@ class IdeaSearchFitter:
 
         try:
             
-            # 先利用 Ansatz 的 _check_format 动作初步检查一下
-            Ansatz(
+            ansatz = Ansatz(
                 expression = idea,
                 variables = self._variables,
                 functions = self._functions,
@@ -144,12 +144,6 @@ class IdeaSearchFitter:
             
             metric_type = "reduced chi squared" \
                 if (self._error is not None) else "mean square error"
-                
-            ansatz = Ansatz(
-                expression = idea,
-                variables = self._variables,
-                functions = self._functions,
-            )
             
             ansatz_param_num = ansatz.get_param_num()
             
@@ -177,11 +171,17 @@ class IdeaSearchFitter:
                     param_num = ansatz_param_num,   
                 )
                 
+            residual_report = self._analyze_residuals(
+                y_true = self._y_remainder_rescaled,
+                y_pred = y_pred_remainder_rescaled,
+            )
+                
             score = self._metric_mapper(best_metric_value)
             info = (
                 f"得分：{score:.2f}\n"
                 f"{metric_type}：{true_metric_value:.8g}\n"
                 f"最优参数：{best_params_msg}"
+                f"最优参数下拟合模型的残差分析：\n{residual_report}"
             )
             
             return score, info
@@ -401,7 +401,6 @@ class IdeaSearchFitter:
         self._input_dim: int = self._x.shape[1]
         
         self._x_rescale_factor = self._x.mean(0) if self._auto_rescale else 1
-        
         self._x_rescaled: ndarray = self._x / self._x_rescale_factor
         
         self._existing_fit_value: ndarray = numexpr.evaluate(
@@ -413,10 +412,148 @@ class IdeaSearchFitter:
         )
         
         self._y_remainder: ndarray = self._y - self._existing_fit_value
-        
         self._y_rescale_factor = self._y_remainder.mean(0) if self._auto_rescale else 1
-        
         self._y_remainder_rescaled: ndarray = self._y_remainder / self._y_rescale_factor
+        
+    
+    # [Warning] unexamined implementation via vibe coding
+    def _analyze_data(
+        self
+    )-> None:
+
+        n_samples, _ = self._x_rescaled.shape
+        y_data = self._y_remainder_rescaled
+        
+        report_lines = []
+        
+        x_min = self._x_rescaled.min(axis=0)
+        x_max = self._x_rescaled.max(axis=0)
+        
+        for i, var_name in enumerate(self._variables):
+            report_lines.append(f"{var_name}: 范围 [{x_min[i]:.4f}, {x_max[i]:.4f}]")
+        
+        for i, var_name in enumerate(self._variables):
+            x_dim = self._x_rescaled[:, i]
+            min_idx = np.argmin(x_dim)
+            max_idx = np.argmax(x_dim)
+            report_lines.append(f"{var_name}: 极值位置 {min_idx}, {max_idx}")
+        
+        report_lines.append("")
+        
+        y_min = y_data.min()
+        y_max = y_data.max()
+        report_lines.append(f"输出范围: [{y_min:.4f}, {y_max:.4f}]")
+        
+        y_min_idx = np.argmin(y_data)
+        y_max_idx = np.argmax(y_data)
+        report_lines.append(f"输出极值位置: {y_min_idx}, {y_max_idx}")
+        
+        if n_samples > 1:
+            y_diff = np.diff(y_data)
+            avg_slope = np.mean(np.abs(y_diff))
+            max_slope = np.max(np.abs(y_diff))
+            min_slope = np.min(np.abs(y_diff))
+            
+            report_lines.append(f"斜率: 平均{avg_slope:.4f} 最大{max_slope:.4f} 最小{min_slope:.4f}")
+            
+            if n_samples > 2:
+                platform_threshold = avg_slope * 0.1
+                platforms = []
+                current_platform = []
+                
+                for i, slope in enumerate(np.abs(y_diff)):
+                    if slope < platform_threshold:
+                        if not current_platform:
+                            current_platform = [i]
+                        else:
+                            current_platform.append(i)
+                    else:
+                        if current_platform and len(current_platform) > 1:
+                            platforms.append((current_platform[0], current_platform[-1] + 1))
+                        current_platform = []
+                
+                if current_platform and len(current_platform) > 1:
+                    platforms.append((current_platform[0], current_platform[-1] + 1))
+                
+                if platforms:
+                    platform_info = []
+                    for start, end in platforms:
+                        platform_length = end - start + 1
+                        platform_avg = np.mean(y_data[start:end+1])
+                        platform_info.append(f"{start}-{end}(长{platform_length}均{platform_avg:.3f})")
+                    
+                    report_lines.append(f"平台: {', '.join(platform_info)}")
+        
+        report_lines.append("")
+        report_lines.append(f"样本数: {n_samples}")
+        report_lines.append(f"输出均值: {np.mean(y_data):.4f}")
+        report_lines.append(f"输出标准差: {np.std(y_data):.4f}")
+        
+        self._data_info = "\n".join(report_lines)
+        
+
+    # [Warning] unexamined implementation via vibe coding
+    def _analyze_residuals(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+    ) -> str:
+
+        residuals = y_true - y_pred
+        abs_residuals = np.abs(residuals)
+        residual_std = np.std(residuals)
+        
+        report_lines = []
+        
+        mse = np.mean(residuals ** 2)
+        mae = np.mean(abs_residuals)
+        max_error = np.max(abs_residuals)
+        
+        report_lines.append(f"拟合误差: MSE={mse:.3e}, MAE={mae:.3e}, 最大误差={max_error:.3e}")
+        
+        skewness = np.mean(residuals ** 3) / (residual_std ** 3)
+        residual_mean = np.mean(residuals)
+        
+        if abs(skewness) > 0.5:
+            bias_direction = "系统性高估" if residual_mean < 0 else "系统性低估"
+            report_lines.append(f"⚠️ 检测到{ bias_direction }，建议添加常数项修正")
+        else:
+            report_lines.append("✓ 残差分布基本对称，无显著系统偏差")
+        
+        kurtosis = np.mean(residuals ** 4) / (residual_std ** 4) - 3
+        if kurtosis > 1:
+            report_lines.append("⚠️ 残差呈现厚尾分布，建议考虑指数或对数变换")
+        elif kurtosis < -1:
+            report_lines.append("⚠️ 残差呈现尖峰分布，建议检查过拟合")
+        
+        large_error_mask = abs_residuals > 2 * residual_std
+        large_error_ratio = np.mean(large_error_mask)
+        
+        if large_error_ratio > 0.1:
+            outlier_positions = np.where(large_error_mask)[0]
+            report_lines.append(f"⚠️ 发现{len(outlier_positions)}个异常点，建议增强局部拟合能力")
+        
+        positive_ratio = np.mean(residuals > 0)
+        if abs(positive_ratio - 0.5) > 0.2:
+            imbalance_type = "正残差居多" if positive_ratio > 0.5 else "负残差居多"
+            report_lines.append(f"⚠️ 残差正负不平衡({imbalance_type})，建议调整函数对称性")
+        
+        q25, q50, q75 = np.percentile(abs_residuals, [25, 50, 75])
+        if q75 / q25 > 3:
+            report_lines.append("⚠️ 误差分布离散，建议采用分段函数或加权拟合")
+        
+        report_lines.append("")
+        report_lines.append("改进建议优先级：")
+        if abs(skewness) > 0.8:
+            report_lines.append("1. 添加常数项或线性项修正系统偏差")
+        elif large_error_ratio > 0.15:
+            report_lines.append("1. 处理异常点，考虑局部拟合或鲁棒函数")
+        elif kurtosis > 1.5:
+            report_lines.append("1. 尝试指数/对数变换改善分布")
+        else:
+            report_lines.append("1. 当前拟合较好，可尝试复杂度更高的函数")
+        
+        return "\n".join(report_lines)
         
         
     def _set_variables(
@@ -518,7 +655,8 @@ class IdeaSearchFitter:
             f"variables = [{prologue_section_variable_string}]\n"
             f"functions = [{prologue_section_function_string}]\n"
             "请注意这些是你唯一可以使用的变量和函数。\n"
-            "为了帮助你理解风格和注意事项，我们先提供一些已有的 expression 示例，请仔细观察它们的结构与潜在问题，总结经验教训后再开始生成：\n"
+            f"其次，请查看待拟合函数的一份简短报告：\n{self._data_info}\n"
+            "然后，为了帮助你理解风格和注意事项，我们先提供一些已有的 expression 示例，请仔细观察它们的结构与潜在问题，总结经验教训后再开始生成：\n"
         )
         
         self.epilogue_section: str = (
@@ -606,7 +744,7 @@ class IdeaSearchFitter:
             
             return metric_value
         
-        natural_param_range = (-10.0, 10.0)
+        natural_param_range = (-100.0, 100.0)
                 
         best_params, best_metric_value = ansatz.apply_to(
             numeric_ansatz_user = numeric_ansatz_user,
