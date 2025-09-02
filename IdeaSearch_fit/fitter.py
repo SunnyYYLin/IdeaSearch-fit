@@ -72,10 +72,10 @@ class IdeaSearchFitter:
         
         self._initialize_data(data, data_path)
         self._process_data()
-        self._analyze_data()
-        
         self._set_variables(variable_names, variable_units)
-        self._set_functions(functions); self._set_prompts()
+        self._analyze_data()
+        self._set_functions(functions)
+        self._set_prompts()
         self._output_unit: Optional[str] = output_unit
         
         self._set_naive_linear_idea(); self._set_initial_ideas()

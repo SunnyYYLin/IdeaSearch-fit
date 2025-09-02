@@ -13,7 +13,7 @@ def main():
         # 若选 data_path ，文件应为 .npz 格式，且 load 后同样含有键 `x`，`y` 和 `error` （可选）
         data = {
             "x": (x := np.random.uniform(1, 10, (1000, 1))),
-            "y": (5 * np.exp(-(x - 5)**2 / (2 * 3**2)))\
+            "y": (5 * np.exp(-(x[:,0] - 5)**2 / (2 * 3**2)))\
                 # + (noise := np.random.normal(0, 0.1, size = 1000)),
             # "error": np.abs(noise) * 1.5,
         }

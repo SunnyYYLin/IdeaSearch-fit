@@ -3,5 +3,5 @@ build/
 dist/
 *.egg-info/
 api_keys.json
-demo/database/
+scripts/demo/database/
 venv/

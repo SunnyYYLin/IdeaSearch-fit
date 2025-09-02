@@ -1,7 +1,9 @@
 import numpy as np
 import numexpr
 import re
-from .typing import *
+from typing import (
+    List, Tuple,
+)
 
 
 __all__ = [
@@ -19,11 +21,62 @@ DIMENSION_NAMES = [
 ]
 
 
+def formalize(unit: str) -> List[float]:
+    # 基本单位列表和索引
+    base_units = ['m', 's', 'kg', 'K', 'V']
+    unit_vector = [0.0] * 5
+    
+    # 常见派生单位映射到基本单位表达式
+    common_units = {
+        "J": "kg m^2 s^-2",
+        "Pa": "kg m^-1 s^-2",
+        "N": "kg m s^-2",
+        "W": "kg m^2 s^-3",
+        "Hz": "s^-1",
+        "C": "kg m^2 s^-2 V^-1",
+        "A": "kg m^2 s^-3 V^-1",
+        # 可以添加更多
+    }
+    
+    if unit == "Dimensionless":
+        return unit_vector
+
+    # 首先，替换派生单位
+    # 将输入字符串按空格分割，然后每个单词如果是派生单位则替换，然后重新组合
+    words = unit.split()
+    expanded_words = []
+    for word in words:
+        if word in common_units:
+            expanded_words.extend(common_units[word].split())
+        else:
+            expanded_words.append(word)
+    unit_str = " ".join(expanded_words)
+    
+    # 现在unit_str应该是基本单位表达式
+    tokens = unit_str.split()
+    for token in tokens:
+        # 检查是否有^
+        if '^' in token:
+            parts = token.split('^')
+            unit_name = parts[0]
+            exp = float(parts[1])
+        else:
+            unit_name = token
+            exp = 1.0
+        
+        if unit_name in base_units:
+            idx = base_units.index(unit_name)
+            unit_vector[idx] += exp
+        else:
+            raise ValueError(f"未知单位: {unit_name}")
+    
+    return unit_vector
+
 def validate_unit(
     expression: str,
-    expression_unit: List[float],
+    expression_unit: str,
     variable_names: List[str],
-    variable_units: List[List[float]],
+    variable_units: List[str],
 )-> Tuple[bool, str]:
     
     """
@@ -53,8 +106,11 @@ def validate_unit(
         [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]      # 缩放因子
         )
     random_seed = 42                        # 随机数种子
-    
-    input_scale = dict(zip(variable_names, variable_units))
+
+    expression_unit_formal = formalize(expression_unit)
+    variable_units_formal = [formalize(u) for u in variable_units]
+
+    input_scale = dict(zip(variable_names, variable_units_formal))
 
     # 1. 从表达式中识别变量和参数
     variables = sorted(list(input_scale.keys()))
@@ -146,7 +202,7 @@ def validate_unit(
             actual_power = log_a[0] / log_s[0]
 
         # 将计算出的实际幂次与期望幂次进行比较
-        theoretical_power = expression_unit[i]
+        theoretical_power = expression_unit_formal[i]
         if not np.isclose(actual_power, theoretical_power):
             inconsistent_dims.append(
                 f"维度 '{DIMENSION_NAMES[i]}' 不一致。期望幂次: {theoretical_power}, "
@@ -159,3 +215,4 @@ def validate_unit(
     else:
         error_message = "\n".join(inconsistent_dims)
         return False, f"表达式量纲不一致:\n{error_message}"
+
