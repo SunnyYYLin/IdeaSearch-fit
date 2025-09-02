@@ -70,13 +70,13 @@ class IdeaSearchFitter:
         self._auto_rescale: bool = auto_rescale
         self._adjust_degrees_of_freedom: bool = adjust_degrees_of_freedom
         
+        self._output_unit: Optional[str] = output_unit
         self._initialize_data(data, data_path)
         self._process_data()
         self._set_variables(variable_names, variable_units)
         self._analyze_data()
         self._set_functions(functions)
         self._set_prompts()
-        self._output_unit: Optional[str] = output_unit
         
         self._set_naive_linear_idea(); self._set_initial_ideas()
         
@@ -675,8 +675,8 @@ class IdeaSearchFitter:
     )-> None:
         
         self._naive_linear_idea: str = " + ".join([
-            f"param{i + 1} * x{i + 1}"
-            for i in range(self._input_dim)
+            f"param{i + 1} * {variable}"
+            for i, variable in enumerate(self._variables)
         ] + [f"param{self._input_dim + 1}"])
         
         
@@ -696,8 +696,8 @@ class IdeaSearchFitter:
     )-> None:
         
         self._numexpr_local_dict: Dict[str, ndarray] = {
-            f"x{i + 1}": self._x_rescaled[:, i]
-            for i in range(self._input_dim)
+            f"{variable}": self._x_rescaled[:, i]
+            for i, variable in enumerate(self._variables)
         }
             
             

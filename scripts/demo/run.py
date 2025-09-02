@@ -16,7 +16,11 @@ def main():
             "y": (5 * np.exp(-(x[:,0] - 5)**2 / (2 * 3**2)))\
                 # + (noise := np.random.normal(0, 0.1, size = 1000)),
             # "error": np.abs(noise) * 1.5,
-        }
+        },
+        perform_unit_validation = True,
+        variable_names = ["l"],
+        variable_units = ["m"],
+        output_unit = "J",
     )
     
     # 首先设置数据库路径，ideasearcher 对文件系统的一切操作都会在数据库中进行
