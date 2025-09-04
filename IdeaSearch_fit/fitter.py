@@ -1,4 +1,5 @@
 import os
+import re
 import numexpr
 import warnings
 import numpy as np
@@ -11,6 +12,7 @@ from typing import Callable
 from typing import Optional
 from threading import Lock
 from numpy.random import default_rng
+from pywheels.llm_tools import get_answer
 from pywheels.math_funcs import reduced_chi_squared
 from pywheels.math_funcs import mean_squared_error
 from pywheels.blueprints.ansatz import Ansatz
@@ -26,7 +28,7 @@ __all__ = [
 
 _numexpr_supported_functions: List[str] = [
     "sin", "cos", "tan", "arcsin", "arccos", "arctan", "sinh", 
-    "cosh", "tanh", "log", "log10", "exp", "sqrt", "abs", 
+    "cosh", "tanh", "log", "log10", "exp", "square", "sqrt", "abs", 
 ]
 
 
@@ -41,9 +43,14 @@ class IdeaSearchFitter:
         existing_fit: str = "0.0",
         functions: List[str] = _numexpr_supported_functions.copy(),
         perform_unit_validation: bool = False,
+        input_description: Optional[str] = None,
+        variable_descreption: Optional[Dict[str, str]] = None,
         variable_names: Optional[List[str]] = None,
         variable_units: Optional[List[str]] = None,
+        output_descreption: Optional[str] = None,
+        output_name: Optional[str] = None,
         output_unit: Optional[str] = None,
+        generate_fuzzy: bool = False,
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 20.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
@@ -69,14 +76,24 @@ class IdeaSearchFitter:
         self._perform_unit_validation: bool = perform_unit_validation
         self._auto_rescale: bool = auto_rescale
         self._adjust_degrees_of_freedom: bool = adjust_degrees_of_freedom
+        self._generate_fuzzy: bool = generate_fuzzy
         
         self._output_unit: Optional[str] = output_unit
+        self._output_name: Optional[str] = output_name
+        self._variable_descreption: Optional[Dict[str,str]] = variable_descreption
+        self._output_descreption: Optional[str] = output_descreption
+        self._input_description: Optional[str] = input_description
+
         self._initialize_data(data, data_path)
         self._process_data()
         self._set_variables(variable_names, variable_units)
         self._analyze_data()
         self._set_functions(functions)
-        self._set_prompts()
+        
+        if self._generate_fuzzy:
+            self._set_prompts_for_fuzzy()
+        else:
+            self._set_prompts()
         
         self._set_naive_linear_idea(); self._set_initial_ideas()
         
@@ -101,7 +118,10 @@ class IdeaSearchFitter:
         self,
         idea: str
     )-> Tuple[float, Optional[str]]:
-
+        
+        if self._generate_fuzzy:
+            idea = self._bring_fuzzy_to_life(idea)
+        
         try:
             
             ansatz = Ansatz(
@@ -123,7 +143,7 @@ class IdeaSearchFitter:
                 )
                 
                 if not unit_correctness:
-                    score = 0.0
+                    score = -0.5
                     info = f"拟设量纲错误！具体信息：{unit_validation_info}"
                     return score, info
 
@@ -179,6 +199,7 @@ class IdeaSearchFitter:
             score = self._metric_mapper(best_metric_value)
             info = (
                 f"得分：{score:.2f}\n"
+                f"拟设：{idea}\n"
                 f"{metric_type}：{true_metric_value:.8g}\n"
                 f"最优参数：{best_params_msg}"
                 f"最优参数下拟合模型的残差分析：\n{residual_report}"
@@ -432,58 +453,12 @@ class IdeaSearchFitter:
         for i, var_name in enumerate(self._variables):
             report_lines.append(f"{var_name}: 范围 [{x_min[i]:.4f}, {x_max[i]:.4f}]")
         
-        for i, var_name in enumerate(self._variables):
-            x_dim = self._x_rescaled[:, i]
-            min_idx = np.argmin(x_dim)
-            max_idx = np.argmax(x_dim)
-            report_lines.append(f"{var_name}: 极值位置 {min_idx}, {max_idx}")
-        
         report_lines.append("")
         
         y_min = y_data.min()
         y_max = y_data.max()
         report_lines.append(f"输出范围: [{y_min:.4f}, {y_max:.4f}]")
-        
-        y_min_idx = np.argmin(y_data)
-        y_max_idx = np.argmax(y_data)
-        report_lines.append(f"输出极值位置: {y_min_idx}, {y_max_idx}")
-        
-        if n_samples > 1:
-            y_diff = np.diff(y_data)
-            avg_slope = np.mean(np.abs(y_diff))
-            max_slope = np.max(np.abs(y_diff))
-            min_slope = np.min(np.abs(y_diff))
-            
-            report_lines.append(f"斜率: 平均{avg_slope:.4f} 最大{max_slope:.4f} 最小{min_slope:.4f}")
-            
-            if n_samples > 2:
-                platform_threshold = avg_slope * 0.1
-                platforms = []
-                current_platform = []
-                
-                for i, slope in enumerate(np.abs(y_diff)):
-                    if slope < platform_threshold:
-                        if not current_platform:
-                            current_platform = [i]
-                        else:
-                            current_platform.append(i)
-                    else:
-                        if current_platform and len(current_platform) > 1:
-                            platforms.append((current_platform[0], current_platform[-1] + 1))
-                        current_platform = []
-                
-                if current_platform and len(current_platform) > 1:
-                    platforms.append((current_platform[0], current_platform[-1] + 1))
-                
-                if platforms:
-                    platform_info = []
-                    for start, end in platforms:
-                        platform_length = end - start + 1
-                        platform_avg = np.mean(y_data[start:end+1])
-                        platform_info.append(f"{start}-{end}(长{platform_length}均{platform_avg:.3f})")
-                    
-                    report_lines.append(f"平台: {', '.join(platform_info)}")
-        
+  
         report_lines.append("")
         report_lines.append(f"样本数: {n_samples}")
         report_lines.append(f"输出均值: {np.mean(y_data):.4f}")
@@ -498,10 +473,9 @@ class IdeaSearchFitter:
         y_true: np.ndarray,
         y_pred: np.ndarray,
     ) -> str:
-
+        
         residuals = y_true - y_pred
         abs_residuals = np.abs(residuals)
-        residual_std = np.std(residuals)
         
         report_lines = []
         
@@ -510,48 +484,6 @@ class IdeaSearchFitter:
         max_error = np.max(abs_residuals)
         
         report_lines.append(f"拟合误差: MSE={mse:.3e}, MAE={mae:.3e}, 最大误差={max_error:.3e}")
-        
-        skewness = np.mean(residuals ** 3) / (residual_std ** 3)
-        residual_mean = np.mean(residuals)
-        
-        if abs(skewness) > 0.5:
-            bias_direction = "系统性高估" if residual_mean < 0 else "系统性低估"
-            report_lines.append(f"⚠️ 检测到{ bias_direction }，建议添加常数项修正")
-        else:
-            report_lines.append("✓ 残差分布基本对称，无显著系统偏差")
-        
-        kurtosis = np.mean(residuals ** 4) / (residual_std ** 4) - 3
-        if kurtosis > 1:
-            report_lines.append("⚠️ 残差呈现厚尾分布，建议考虑指数或对数变换")
-        elif kurtosis < -1:
-            report_lines.append("⚠️ 残差呈现尖峰分布，建议检查过拟合")
-        
-        large_error_mask = abs_residuals > 2 * residual_std
-        large_error_ratio = np.mean(large_error_mask)
-        
-        if large_error_ratio > 0.1:
-            outlier_positions = np.where(large_error_mask)[0]
-            report_lines.append(f"⚠️ 发现{len(outlier_positions)}个异常点，建议增强局部拟合能力")
-        
-        positive_ratio = np.mean(residuals > 0)
-        if abs(positive_ratio - 0.5) > 0.2:
-            imbalance_type = "正残差居多" if positive_ratio > 0.5 else "负残差居多"
-            report_lines.append(f"⚠️ 残差正负不平衡({imbalance_type})，建议调整函数对称性")
-        
-        q25, q50, q75 = np.percentile(abs_residuals, [25, 50, 75])
-        if q75 / q25 > 3:
-            report_lines.append("⚠️ 误差分布离散，建议采用分段函数或加权拟合")
-        
-        report_lines.append("")
-        report_lines.append("改进建议优先级：")
-        if abs(skewness) > 0.8:
-            report_lines.append("1. 添加常数项或线性项修正系统偏差")
-        elif large_error_ratio > 0.15:
-            report_lines.append("1. 处理异常点，考虑局部拟合或鲁棒函数")
-        elif kurtosis > 1.5:
-            report_lines.append("1. 尝试指数/对数变换改善分布")
-        else:
-            report_lines.append("1. 当前拟合较好，可尝试复杂度更高的函数")
         
         return "\n".join(report_lines)
         
@@ -629,14 +561,30 @@ class IdeaSearchFitter:
             
             assert self._variable_units is not None
             assert self._output_unit is not None
+            assert self._output_name is not None
+            if self._variable_descreption is None:
+                self._variable_descreption = {}
             
+            if list(self._variable_descreption.keys()) != self._variables:
+                for var in self._variables:
+                    if var not in self._variable_descreption:
+                        self._variable_descreption[var] = "未知物理量"
+            if self._output_descreption is None:
+                self._output_descreption = "未知物理量"
+
             variables_info = (
                 f"另外， {', '.join(self._variables)} 是物理量，"
-                f"单位分别为 {', '.join(self._variable_units)} ，"
-                "而所有的 param 都是无量纲（单位为 1 ）的；"
-                f"你要搜寻一个单位为 {self._output_unit} 的拟设，请务必确保量纲的正确性。"
+                f"这些物理量的单位分别为 {', '.join(self._variable_units)} ，"
+                f"这些物理量的含义为： {', '.join([var +':'+self._variable_descreption[var] for var in self._variables])} 。\n"
+                "为了简化问题，所有的可优化参数 param 都是无量纲（单位为 1 ）的；这些经验参数越少越好。\n"
+                f"你要用这些物理量和经验参数 param 构造一个表达式来描述一个单位为 {self._output_unit} 的物理量{self._output_name}"
+                f"这个物理量的含义为：{self._output_descreption}，请务必确保表达式的量纲的正确性。"
+                f"为此，必要时你可能需要构造一些无量纲量来进行复杂的函数运算，并随后将量纲匹配到目标输出{self._output_name}上。"
             )
-        
+
+            if self._input_description:
+                variables_info = self._input_description + "\n" + variables_info
+
         else:
         
             variables_info = (
@@ -660,16 +608,164 @@ class IdeaSearchFitter:
         )
         
         self.epilogue_section: str = (
-            "分析以上示例时，如果你发现某个参数的最优值始终非常接近零，说明它在该任务中作用不大，"
+            "分析以上示例时，如果你发现一些特征，可能可以以启发式的方法重构参数，例如，"
+            "如果某个参数的最优值始终非常接近零，说明它在该任务中作用不大，"
             "你可以考虑在新的拟设中去除这一参数，以提高结构紧凑性与有效性。\n"
+            "同样的，如果某两个参数相近，某个参数列接近一个函数的泰勒展开系数等等，都可能能够帮助你注意到或者猜出更合理的函数形式"
             f"{variables_info}"
-            "最后，如果遇到非独立参数（例如 param1 * (param2 * x + param3)），"
+            "其次，如果遇到非独立参数（例如 param1 * (param2 * x + param3)），"
             "请将其整理为 param1 * x + param2 的形式，让各个参数尽量独立。\n"
+            "最后，注意拟设格式规则意味着你需要显式写出倍数和幂率\n"
+            "比如你必须将3*x写作(x+x+x)，或将y**2写作(y*y)，这样才能确保函数被正确读取。\n"
+            "拟设格式规则同样要求你不得使用1，0，-1等数字，这就意味着你必须将1写作(x/x)，x**-1写作param1/(param1*x)等形式。\n"
             "现在，请你开始生成 expression 表达式。"
             "请记住，直接输出合法的表达式字符串，不要包含解释、注释或额外内容，方便我们接入自动任务流。"
         )
         
+    
+    def _set_prompts_for_fuzzy(
+        self,
+    )-> None:
         
+        """
+        configure system_prompt, prologue_section, epilogue_section for IdeaSearcher (fuzzy version)
+        """
+        
+        prologue_section_variable_string = ", ".join(
+            [f'"{variable}"' for variable in self._variables]
+        )
+        
+        prologue_section_function_string = ", ".join(
+            [f'"{function}"' for function in self._functions]
+        )
+        
+        variables_info: str
+        
+        if self._perform_unit_validation:
+            
+            assert self._variable_units is not None
+            assert self._output_unit is not None
+            assert self._output_name is not None
+            
+            if self._variable_descreption is None:
+                self._variable_descreption = {}
+
+            if self._variable_descreption.keys() != self._variables:
+                for var in self._variables:
+                    if var not in self._variable_descreption:
+                        self._variable_descreption[var] = "未知物理量"
+                        
+            if self._output_descreption is None:
+                self._output_descreption = "未知物理量"
+
+            variables_info = (
+                f"另外， {', '.join(self._variables)} 是物理量，"
+                f"这些物理量的单位分别为 {', '.join(self._variable_units)} ，"
+                f"这些物理量的含义为： {', '.join([var +':' + self._variable_descreption[var] for var in self._variables])} 。\n"
+                "为了简化问题，所有的可优化参数 param 都是无量纲（单位为 1 ）的；这些经验参数越少越好。\n"
+                f"你要用这些物理量和经验参数 param 构造一个表达式来描述一个单位为 {self._output_unit} 的物理量{self._output_name}"
+                f"这个物理量的含义为：{self._output_descreption}，请务必确保表达式的量纲的正确性。"
+                f"为此，必要时你可能需要构造一些无量纲量来进行复杂的函数运算，并随后将量纲匹配到目标输出{self._output_name}上。"
+            )
+            
+            if self._input_description:
+                variables_info = self._input_description + "\n" + variables_info
+                
+        else:
+            variables_info = (
+                f"另外，由于 {', '.join(self._variables)} 实际上是物理量，"
+                f"我们鼓励你在将 {', '.join(self._variables)} 设为函数自变量前设置一个参数与之相乘。\n"
+            )
+
+        self.system_prompt: str = (
+            "你是一位富有创造力的物理学家和数据科学家，擅长从数据中发现潜在的规律，并用自然语言和数学公式清晰地表达出来。"
+            "你的任务是分析给定的数据和背景信息，提出一个关于其背后物理机制的连贯的理论分析，并给出一个最能描述该理论的数学公式。"
+        )
+
+        self.prologue_section: str = (
+            "首先，请你理解本任务的背景信息：\n"
+            "我们正在尝试寻找一个数学表达式来拟合一组实验数据。\n"
+            f"可用的自变量为: [{prologue_section_variable_string}]\n"
+            f"可用的函数为: [{prologue_section_function_string}]\n"
+            f"其次，请查看待拟合函数的一份简短报告：\n{self._data_info}\n"
+            "然后，为了帮助你理解风格和注意事项，我们先提供一些已有的 expression 示例，请仔细观察它们的结构与潜在问题，总结经验教训后再开始生成，一定不许重复示例中的内容：\n"
+        )
+
+        self.epilogue_section: str = (
+            "分析以上示例时，如果你发现一些特征，可能可以以启发式的方法重构参数，例如，"
+            "如果某个参数的最优值始终非常接近零，说明它在该任务中作用不大。\n"
+            "同样的，如果某两个参数相近，某个参数列接近一个函数的泰勒展开系数等等，都可能能够帮助你注意到或者猜出更合理的函数形式。\n"
+            f"{variables_info}\n"
+            "现在，请你开始撰写你的分析理论。\n"
+            "你的回答应该包含两部分：\n"
+            "1.  **理论分析**：一段连贯的文字，阐述你对数据背后规律的洞察和推理过程。\n"
+            "2.  **数学公式**：在分析的最后，请给出一个你认为最合适的数学公式。请使用标准的数学排版，并用 `<final_result>` 将其包裹起来，例如 `<final_result> y = a * sin(b * x) + c </final_result>`。\n"
+            "请确保你的分析富有洞察力，公式有合理的物理含义，且不与示例中内容重复。"
+        )
+
+
+    def _bring_fuzzy_to_life(
+        self, 
+        fuzzy: str, 
+    )-> str:
+
+        prologue_section_variable_string = ", ".join(
+            [f'"{variable}"' for variable in self._variables]
+        )
+        prologue_section_function_string = ", ".join(
+            [f'"{function}"' for function in self._functions]
+        )
+
+        system_prompt = (
+            "你是一个严格遵循指令的代码转换器。"
+            "你的任务是将一个包含自然语言和标准数学公式的理论描述，转换成一个严格符合特定语法的表达式字符串。"
+        )
+        
+        formula_part = ""
+        final_result_pattern = r'<final_result>(.*?)</final_result>'
+        matches = re.findall(final_result_pattern, fuzzy, re.DOTALL)
+        
+        if matches:
+            formula_part = matches[-1].strip()
+        else:
+            formula_part = '[未找到最终公式，请参考上面的理论描述结果构造表达式]'
+    
+        
+        user_prompt = (
+            f"请将以下理论描述中的数学公式转换成严格的拟设表达式。\n"
+            f"公式所来自的理论（仅参考）：\n---\n{fuzzy}\n---\n\n"
+            f"请严格遵守以下格式规则：\n"
+            f"1.  **拟设格式**: 完整格式为：\n{ansatz_docstring}\n"
+            f"2.  **可用变量**: `variables = [{prologue_section_variable_string}]`\n"
+            f"3.  **可用函数**: `functions = [{prologue_section_function_string}]`\n"
+            "    这些是你在拟设表达式中唯一可以使用的变量和函数。\n"
+            "4.  **无数字**: 不得使用任何数字（如 1, 0, -1, 3.14）。\n"
+            "    -   `1` 必须写成 `(x/x)` (其中 `x` 是任意变量)。\n"
+            "    -   `-1` 必须写成 `(x-x)-y/y` 的形式。\n"
+            "    -   其他数字必须通过变量和参数构造，例如 `2` 可以是 `param1/param2` 并在后续优化，或者写成 `(x+x)/x`。\n"
+            "5.  **显式乘幂**: 必须显式写出倍数和幂率。\n"
+            "    -   `3*x` 必须写成 `(x+x+x)`。\n"
+            "    -   `y**2` 必须写成 `(y*y)`。\n"
+            "    -   `y**-1` 必须写成 `(x/x)/y` 的形式。\n"
+            "6.  **独立参数**: 避免非独立参数。例如，`param1 * (param2 * x + param3)` 应整理为 `param1 * x + param2` 的形式（通过重命名参数）。\n"
+            "7.  **至少一个参数**： 确保表达式中至少包含一个参数 `param1`，以便后续优化。\n"
+            "7.  **输出**: 只输出最终的表达式字符串，不要包含任何解释、注释或额外内容。以便于我们接入自动处理信息流。\n\n"
+            f"例如，如果给你的内容是 `y = 2*x + 1（其中x为自变量，y为因变量）`，你应该输出 `(x+x) + param1 * (x/x)`或`param1 * x + (x/x)`。\n"
+            f"现在，请转换这个公式：`{formula_part}`"
+        )
+        
+        llm_response = get_answer(
+            prompt = user_prompt,
+            system_prompt = system_prompt,
+            model_name = "Qwen_Max",
+            model_temperature = 0.0,
+        )
+        
+        llm_answer = re.sub(r'[`\'\"<>]', '', llm_response)
+
+        return llm_answer
+
+
     def _set_naive_linear_idea(
         self,
     )-> None:
@@ -744,13 +840,13 @@ class IdeaSearchFitter:
             
             return metric_value
         
-        natural_param_range = (-100.0, 100.0)
+        natural_param_range = (-10.0, 10.0)
                 
         best_params, best_metric_value = ansatz.apply_to(
             numeric_ansatz_user = numeric_ansatz_user,
             param_ranges = [natural_param_range] * ansatz_param_num,
-            trial_num = 1,
-            method = "differential-evolution",
+            trial_num = 100,
+            method = "L-BFGS-B",
         )
         
         return best_params, best_metric_value
