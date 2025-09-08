@@ -1,24 +1,8 @@
-import os
-import re
-import numexpr
-import warnings
-import numpy as np
-from numpy import ndarray
-from typing import Dict
-from typing import List
-from typing import Tuple
-from typing import Literal
-from typing import Callable
-from typing import Optional
-from threading import Lock
-from numpy.random import default_rng
-from pywheels.llm_tools import get_answer
-from pywheels.math_funcs import reduced_chi_squared
-from pywheels.math_funcs import mean_squared_error
-from pywheels.blueprints.ansatz import Ansatz
-from pywheels.blueprints.ansatz import ansatz_docstring
-from .unit_validator import validate_unit
 from .i18n import translate
+from .unit_validator import validate_unit
+from .typing import *
+from .external import *
+from .pywheels import *
 
 
 __all__ = [
@@ -114,13 +98,14 @@ class IdeaSearchFitter:
     
     # ----------------------------- 外部动作 -----------------------------
 
+    @lru_cache(maxsize = 2048)
     def evaluate_func(
         self,
         idea: str
     )-> Tuple[float, Optional[str]]:
         
         if self._generate_fuzzy:
-            idea = self._bring_fuzzy_to_life(idea)
+            idea = self._translate_fuzzy_to_idea(idea)
         
         try:
             
@@ -704,7 +689,7 @@ class IdeaSearchFitter:
         )
 
 
-    def _bring_fuzzy_to_life(
+    def _translate_fuzzy_to_idea(
         self, 
         fuzzy: str, 
     )-> str:

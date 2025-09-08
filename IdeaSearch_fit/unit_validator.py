@@ -1,9 +1,5 @@
-import numpy as np
-import numexpr
-import re
-from typing import (
-    List, Tuple,
-)
+from .typing import *
+from .external import *
 
 
 __all__ = [
