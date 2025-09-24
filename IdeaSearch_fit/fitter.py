@@ -26,6 +26,8 @@ class IdeaSearchFitter:
         data_path: Optional[str] = None,
         existing_fit: str = "0.0",
         functions: List[str] = _numexpr_supported_functions.copy(),
+        constant_whitelist: List[str] = [],
+        constant_map: Dict[str, float] = {"pi": np.pi},
         perform_unit_validation: bool = False,
         input_description: Optional[str] = None,
         variable_descreption: Optional[Dict[str, str]] = None,
@@ -73,6 +75,8 @@ class IdeaSearchFitter:
         self._set_variables(variable_names, variable_units)
         self._analyze_data()
         self._set_functions(functions)
+        self._constant_whitelist = constant_whitelist
+        self._constant_map = constant_map
         
         if self._generate_fuzzy:
             self._set_prompts_for_fuzzy()
@@ -113,6 +117,7 @@ class IdeaSearchFitter:
                 expression = idea,
                 variables = self._variables,
                 functions = self._functions,
+                constant_whitelist = self._constant_whitelist,
             )
             
             if self._perform_unit_validation:
@@ -205,6 +210,7 @@ class IdeaSearchFitter:
             expression = idea,
             variables = self._variables,
             functions = self._functions,
+            constant_whitelist = self._constant_whitelist,
             seed = self._random_generator.integers(0, 1 << 30),
         )
         
@@ -227,12 +233,14 @@ class IdeaSearchFitter:
                 expression = parent1,
                 variables = self._variables,
                 functions = self._functions,
+                constant_whitelist = self._constant_whitelist,
             )
             
             ansatz2 = Ansatz(
                 expression = parent2,
                 variables = self._variables,
                 functions = self._functions,
+                constant_whitelist = self._constant_whitelist,
             )
             
             if coin < 0.3:
@@ -742,8 +750,8 @@ class IdeaSearchFitter:
         llm_response = get_answer(
             prompt = user_prompt,
             system_prompt = system_prompt,
-            model_name = "Qwen_Max",
-            model_temperature = 0.0,
+            model = "Qwen_Max",
+            temperature = 0.0,
         )
         
         llm_answer = re.sub(r'[`\'\"<>]', '', llm_response)
@@ -776,9 +784,13 @@ class IdeaSearchFitter:
         self,
     )-> None:
         
-        self._numexpr_local_dict: Dict[str, ndarray] = {
+        variable_local_dict = {
             f"{variable}": self._x_rescaled[:, i]
             for i, variable in enumerate(self._variables)
+        }
+        self._numexpr_local_dict = {
+            **variable_local_dict,
+            **self._constant_map,
         }
             
             
@@ -791,6 +803,7 @@ class IdeaSearchFitter:
             expression = idea,
             variables = self._variables,
             functions = self._functions,
+            constant_whitelist = self._constant_whitelist,
         )
         
         ansatz_param_num = ansatz.get_param_num()
@@ -891,6 +904,7 @@ class IdeaSearchFitter:
                 expression = expression,
                 variables = self._variables,
                 functions = self._functions, 
+                constant_whitelist = self._constant_whitelist,
             )
             
             self._best_fit = ansatz.reduce_to_numeric_ansatz(best_params)
