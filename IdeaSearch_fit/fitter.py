@@ -33,18 +33,19 @@ class IdeaSearchFitter:
         constant_map: Dict[str, float] = {"pi": np.pi},
         perform_unit_validation: bool = False,
         input_description: Optional[str] = None,
-        variable_description: Optional[Dict[str, str]] = None,
+        variable_descriptions: Optional[Dict[str, str]] = None,
         variable_names: Optional[List[str]] = None,
         variable_units: Optional[List[str]] = None,
         output_description: Optional[str] = None,
         output_name: Optional[str] = None,
         output_unit: Optional[str] = None,
+        auto_polish: bool = True,
+        auto_polisher: Optional[str] = None, 
         generate_fuzzy: bool = True,
         fuzzy_translator: Optional[str] = None,
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 20.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
-        adjust_degrees_of_freedom: bool = False,
         enable_mutation: bool = False,
         enable_crossover: bool = False,
         seed: Optional[int] = None,
@@ -53,6 +54,7 @@ class IdeaSearchFitter:
         # Under development and testing
         auto_rescale = False
         existing_fit = "0.0"
+        adjust_degrees_of_freedom = False
         
         self._preflight_check(
             result_path = result_path,
@@ -62,9 +64,11 @@ class IdeaSearchFitter:
             variable_names = variable_names,
             variable_units = variable_units,
             output_unit = output_unit,
-            generate_fuzzy = generate_fuzzy,
-            fuzzy_translator = fuzzy_translator,
         )
+        
+        default_model = get_available_models()[0]
+        if auto_polisher is None: auto_polisher = default_model
+        if fuzzy_translator is None: fuzzy_translator = default_model
         
         self._random_generator = default_rng(seed)
         
@@ -85,9 +89,11 @@ class IdeaSearchFitter:
         
         self._output_unit: Optional[str] = output_unit
         self._output_name: Optional[str] = output_name
-        self._variable_description: Optional[Dict[str,str]] = variable_description
+        self._variable_descriptions: Optional[Dict[str,str]] = variable_descriptions
         self._output_description: Optional[str] = output_description
         self._input_description: Optional[str] = input_description
+        self._auto_polisher = auto_polisher
+        if auto_polish: self._auto_polish()
 
         self._initialize_data(data, data_path)
         self._process_data()
@@ -314,8 +320,8 @@ class IdeaSearchFitter:
         ansatz.mutate()
         
         return ansatz.to_expression()
-        
-        
+    
+    
     def crossover_func(
         self,
         parent1: str,
@@ -398,8 +404,6 @@ class IdeaSearchFitter:
         variable_names: Optional[List[str]],
         variable_units: Optional[List[str]],
         output_unit: Optional[str],
-        generate_fuzzy: bool,
-        fuzzy_translator: Optional[str],
     )-> None:
         
         if not os.path.isdir(result_path):
@@ -417,11 +421,6 @@ class IdeaSearchFitter:
             (variable_names is None or variable_units is None or output_unit is None): 
             raise ValueError(translate(
                 "【IdeaSearchFitter】初始化时出错：单位检查开启时必须传入 variable_names 、 variable_units 和 output_unit！"
-            ))
-            
-        if generate_fuzzy and fuzzy_translator is None:
-            raise ValueError(translate(
-                "【IdeaSearchFitter】 初始化时出错：生成中间模糊报告时必须设置模糊报告转译模型 fuzzy_translator！"
             ))
     
     
@@ -494,8 +493,103 @@ class IdeaSearchFitter:
             raise RuntimeError(translate(
                 "【IdeaSearchFitter】初始化时出错：数据形状不合要求，输入数据、输出数据与误差（若有）应形状相同！"
             ))
-    
-    
+            
+            
+    def _auto_polish(
+        self,
+    )-> None:
+        
+        if all(item is not None for item in [
+            self._input_description,
+            self._variable_descriptions,
+            self._output_description,
+        ]): return
+        
+        if self._variable_units is None:
+            input_variable_string = ", ".join(self._variables)
+        else:
+            input_variable_string = ", ".join(f"{variable} ({unit})" for variable, unit in zip(
+                self._variables,
+                self._variable_units,
+            ))
+
+        if self._output_unit is None:
+            assert self._output_name is not None
+            output_variable_string = self._output_name
+        else:
+            assert self._output_name is not None
+            output_variable_string = f"{self._output_name} ({self._output_unit})"
+        
+        system_prompt = "You are a domain expert skilled at inferring the physical or conceptual meaning of variables from their names and associated units."
+        
+        prompt = f"""
+As a domain expert, your task is to provide clear, concise descriptions for the following variables based on the provided information.
+
+### Variables
+- **Input Features**: {input_variable_string}
+- **Target Variable**: {output_variable_string}
+
+### Instructions
+1.  **Analyze**: Infer the likely meaning of each variable based on its name and unit.
+2.  **Describe**: Provide a concise, one to two-sentence explanation for each variable. If a variable's meaning is ambiguous, state that it is unclear or list the possible interpretations instead of inventing a definition.
+3.  **Format**: Your response MUST be a single, valid JSON object containing the following three keys:
+    - `input_description`: A string providing a brief, high-level overview of the dataset or physical system.
+    - `variable_descriptions`: A dictionary where each key is a feature variable name (string) and the value is its description (string). This dictionary **MUST** contain an entry for every single feature variable listed above.
+    - `output_description`: A string describing the meaning of the target variable.
+
+Ensure your final output is a raw JSON string without any surrounding text, explanations, or code fences (e.g., ```json). Pay strict attention to correct quoting and escaping to ensure it is parsable.
+"""
+
+        polished_results: Dict[str, Any] = {}
+        def check_and_accept(
+            response: str,
+        )-> bool:
+            nonlocal polished_results
+            try:
+                json_match = re.search(r"\{.*\}", response, re.DOTALL)
+                assert json_match
+                json_string = json_match.group(0)
+                
+                data = json.loads(json_string)
+                if not isinstance(data, dict): return False
+
+                required_keys = {"input_description", "variable_descriptions", "output_description"}
+                if not required_keys.issubset(data.keys()): return False
+
+                if not all(isinstance(data[key], str) for key in ["input_description", "output_description"]):
+                    return False
+                
+                if not isinstance(data["variable_descriptions"], dict):
+                    return False
+                
+                described_vars = set(data["variable_descriptions"].keys())
+                expected_vars = set(self._variables)
+                if described_vars != expected_vars: return False
+                
+                polished_results = data
+                return True
+            
+            except Exception:
+                return False
+        
+        # utilize get_answer's check_and_accept feature
+        _ = get_answer(
+            prompt = prompt,
+            model = self._auto_polisher,
+            system_prompt = system_prompt,
+            temperature = 0.1,
+            trial_num = 10,
+            check_and_accept = check_and_accept,
+        )
+        
+        if self._input_description is None: 
+            self._input_description = polished_results["input_description"]
+        if self._variable_descriptions is None:
+            self._variable_descriptions = polished_results["variable_descriptions"]
+        if self._output_description is None:
+            self._output_description = polished_results["output_description"]
+
+
     def _process_data(
         self,
     )-> None:
@@ -648,20 +742,20 @@ class IdeaSearchFitter:
             assert self._variable_units is not None
             assert self._output_unit is not None
             assert self._output_name is not None
-            if self._variable_description is None:
-                self._variable_description = {}
+            if self._variable_descriptions is None:
+                self._variable_descriptions = {}
             
-            if list(self._variable_description.keys()) != self._variables:
+            if list(self._variable_descriptions.keys()) != self._variables:
                 for var in self._variables:
-                    if var not in self._variable_description:
-                        self._variable_description[var] = "Unknown physical quantity"
+                    if var not in self._variable_descriptions:
+                        self._variable_descriptions[var] = "Unknown physical quantity"
             if self._output_description is None:
                 self._output_description = "Unknown physical quantity"
 
             variables_info = (
                 f"Additionally, {', '.join(self._variables)} are physical quantities, "
                 f"with respective units of {', '.join(self._variable_units)}, "
-                f"and their meanings are as follows: {', '.join([var +':'+self._variable_description[var] for var in self._variables])}.\n"
+                f"and their meanings are as follows: {', '.join([var +':'+self._variable_descriptions[var] for var in self._variables])}.\n"
                 "To simplify the problem, all optimizable parameters, denoted as `param`, are dimensionless (unit of 1). The number of these empirical parameters should be minimized.\n"
                 f"Your task is to construct an expression using these physical quantities and empirical parameters to describe a physical quantity `{self._output_name}` with units of `{self._output_unit}`."
                 f"The meaning of this quantity is: {self._output_description}. It is crucial to ensure the dimensional correctness of the expression."
@@ -733,24 +827,24 @@ class IdeaSearchFitter:
             assert self._output_unit is not None
             assert self._output_name is not None
             
-            if self._variable_descreption is None:
-                self._variable_descreption = {}
+            if self._variable_descriptions is None:
+                self._variable_descriptions = {}
 
-            if self._variable_descreption.keys() != self._variables:
+            if self._variable_descriptions.keys() != self._variables:
                 for var in self._variables:
-                    if var not in self._variable_descreption:
-                        self._variable_descreption[var] = "Unknown quantity"
+                    if var not in self._variable_descriptions:
+                        self._variable_descriptions[var] = "Unknown quantity"
                         
-            if self._output_descreption is None:
-                self._output_descreption = "Unknown quantity"
+            if self._output_description is None:
+                self._output_description = "Unknown quantity"
 
             variables_info = (
                 f"Additionally, {', '.join(self._variables)} are physical quantities, "
                 f"with respective units of {', '.join(self._variable_units)}, "
-                f"and their meanings are as follows: {', '.join([var +':' + self._variable_descreption[var] for var in self._variables])}.\n"
+                f"and their meanings are as follows: {', '.join([var +':' + self._variable_descriptions[var] for var in self._variables])}.\n"
                 "To simplify the problem, all optimizable parameters, denoted as `param`, are dimensionless (unit of 1). The number of these empirical parameters should be minimized.\n"
                 f"Your task is to construct an expression using these physical quantities and empirical parameters to describe a physical quantity `{self._output_name}` with units of `{self._output_unit}`."
-                f"The meaning of this quantity is: {self._output_descreption}. It is crucial to ensure the dimensional correctness of the expression."
+                f"The meaning of this quantity is: {self._output_description}. It is crucial to ensure the dimensional correctness of the expression."
                 f"To achieve this, you may need to construct dimensionless quantities for complex function operations, and subsequently match the dimensions to the target output `{self._output_name}`."
             )
             
@@ -760,23 +854,23 @@ class IdeaSearchFitter:
         else:
             assert self._output_name is not None
             
-            if self._variable_descreption is None:
-                self._variable_descreption = {}
+            if self._variable_descriptions is None:
+                self._variable_descriptions = {}
 
-            if self._variable_descreption.keys() != self._variables:
+            if self._variable_descriptions.keys() != self._variables:
                 for var in self._variables:
-                    if var not in self._variable_descreption:
-                        self._variable_descreption[var] = "[Undefined Meaning]"
+                    if var not in self._variable_descriptions:
+                        self._variable_descriptions[var] = "[Undefined Meaning]"
                         
-            if self._output_descreption is None:
-                self._output_descreption = "[Undefined Meaning]"
+            if self._output_description is None:
+                self._output_description = "[Undefined Meaning]"
 
             variables_info = (
                 f"Additionally, {', '.join(self._variables)} are the input quantities, "
-                f"and their meanings are as follows: {', '.join([var +':' + self._variable_descreption[var] for var in self._variables])}.\n"
+                f"and their meanings are as follows: {', '.join([var +':' + self._variable_descriptions[var] for var in self._variables])}.\n"
                 "To simplify the problem, all optimizable empirical parameters, denoted as `param`, should be as few as possible and preferably dimensionless.\n"
                 f"Your task is to construct an expression using these quantities and empirical parameters to describe a target quantity: `{self._output_name}`."
-                f"The meaning of this target quantity is: {self._output_descreption}."
+                f"The meaning of this target quantity is: {self._output_description}."
             )
             
             if self._input_description:
