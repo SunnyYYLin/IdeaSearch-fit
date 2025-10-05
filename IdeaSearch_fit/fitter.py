@@ -28,8 +28,7 @@ class IdeaSearchFitter:
         result_path: str,
         data: Optional[Dict[str, ndarray]] = None,
         data_path: Optional[str] = None,
-        existing_fit: str = "0.0",
-        functions: List[str] = _default_functions.copy(),
+        functions: List[str] = deepcopy(_default_functions),
         constant_whitelist: List[str] = [],
         constant_map: Dict[str, float] = {"pi": np.pi},
         perform_unit_validation: bool = False,
@@ -53,6 +52,7 @@ class IdeaSearchFitter:
         
         # Under development and testing
         auto_rescale = False
+        existing_fit = "0.0"
         
         self._preflight_check(
             result_path = result_path,
@@ -371,16 +371,21 @@ class IdeaSearchFitter:
         best_fit = self._best_fit
         
         if best_fit is None:
-            
             raise RuntimeError(
                 translate(
                     "【IdeaSearchFitter】无法返回最佳拟合函数，请先尝试运行 IdeaSearch！"
                 )
             )
             
-        if self._existing_fit != "0.0": best_fit = self._existing_fit + best_fit
-                        
+        if self._existing_fit != "0.0": best_fit = self._existing_fit + best_fit        
         return best_fit
+    
+    
+    def get_pareto_frontier(
+        self,
+    )-> Dict[int, Dict]:
+        
+        return deepcopy(self._pareto_frontier)
     
     # ----------------------------- 内部动作 -----------------------------
     
@@ -435,82 +440,62 @@ class IdeaSearchFitter:
         self._error: Optional[ndarray] = None
             
         if data is not None:
-            
             if "x" not in data:
-                
                 raise ValueError(translate(
                     "【IdeaSearchFitter】初始化时出错：data 应包含键 `x` ！"
                 ))
-                
             if "y" not in data:
-                
                 raise ValueError(translate(
                     "【IdeaSearchFitter】初始化时出错：data 应包含键 `y` ！"
                 ))
-                
             self._x = data["x"]; self._y = data["y"]
-            
             if "error" in data: self._error = data["error"]
                 
         else:
-            
             assert data_path is not None
-
             if not os.path.exists(data_path):
-                
                 raise FileNotFoundError(
                     translate(
                         "【IdeaSearchFitter】初始化时出错：文件 %s 不存在！"
                     ) % (data_path)
                 )
-            
             if not data_path.lower().endswith('.npz'):
-                
                 raise ValueError(translate(
                     "【IdeaSearchFitter】初始化时出错：只支持 .npz 格式文件！"
                 ))
 
             try:
-                
                 with np.load(data_path) as npz_data:
-                    
                     if "x" not in npz_data:
-                        
                         raise ValueError(translate(
                             "【IdeaSearchFitter】初始化时出错：npz 文件应包含键 `x` ！"
-                        ))
-                        
+                        )) 
                     if "y" not in npz_data:
-                        
                         raise ValueError(translate(
                             "【IdeaSearchFitter】初始化时出错：npz 文件应包含键 `y` ！"
                         ))
-                    
                     self._x = npz_data["x"]; self._y = npz_data["y"]
                     if "error" in npz_data: self._error = npz_data["error"]
                     
             except Exception as error:
-                
                 raise RuntimeError(translate(
                         "【IdeaSearchFitter】初始化时出错：加载 %s 失败 - %s"
                     ) % (data_path, str(error))
                 )
                 
         if self._x.ndim != 2 or self._y.ndim != 1 \
-            or (self._error is not None and self._error.ndim != 1):
-                
+            or (self._error is not None and self._error.ndim != 1): 
             raise RuntimeError(translate(
                 "【IdeaSearchFitter】初始化时出错：数据形状不合要求，输入数据应为 2 维，输出数据与误差（若有）应为 1 维！"
             ))
             
         if self._y.shape[0] != self._x.shape[0] \
             or (self._error is not None and self._error.shape[0] != self._x.shape[0]):
-                
             raise RuntimeError(translate(
                 "【IdeaSearchFitter】初始化时出错：数据形状不合要求，输入数据、输出数据与误差（若有）应形状相同！"
             ))
-            
-            
+    
+    
     def _process_data(
         self,
     )-> None:
