@@ -1,5 +1,6 @@
 from .utils import *
 from .unit_validator import *
+from .pareto_frontier import *
 
 
 __all__ = [
@@ -24,6 +25,7 @@ class IdeaSearchFitter:
     
     def __init__(
         self,
+        result_path: str,
         data: Optional[Dict[str, ndarray]] = None,
         data_path: Optional[str] = None,
         existing_fit: str = "0.0",
@@ -43,14 +45,17 @@ class IdeaSearchFitter:
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 20.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
-        auto_rescale: bool = False,
         adjust_degrees_of_freedom: bool = False,
         enable_mutation: bool = False,
         enable_crossover: bool = False,
         seed: Optional[int] = None,
     )-> None:
         
+        # Under development and testing
+        auto_rescale = False
+        
         self._preflight_check(
+            result_path = result_path,
             data = data,
             data_path = data_path,
             perform_unit_validation = perform_unit_validation,
@@ -63,12 +68,20 @@ class IdeaSearchFitter:
         
         self._random_generator = default_rng(seed)
         
+        self._result_path = result_path
+        self._pareto_report_path = f"{result_path}{seperator}pareto_report.txt"
+        self._pareto_data_path = f"{result_path}{seperator}pareto_data.json"
+        self._pareto_frontier: Dict[int, Dict] = {}
+        self._pareto_frontier_lock = Lock()
+        
         self._existing_fit: str = existing_fit
         self._perform_unit_validation: bool = perform_unit_validation
         self._auto_rescale: bool = auto_rescale
         self._adjust_degrees_of_freedom: bool = adjust_degrees_of_freedom
+        
         self._generate_fuzzy: bool = generate_fuzzy
         self._fuzzy_translator = fuzzy_translator
+        self._idea_to_fuzzy: Dict[str, str] = {}
         
         self._output_unit: Optional[str] = output_unit
         self._output_name: Optional[str] = output_name
@@ -159,9 +172,10 @@ class IdeaSearchFitter:
                 if (self._error is not None) else "mean square error"
             
             ansatz_param_num = ansatz.get_param_num()
+            best_numeric_ansatz = ansatz.reduce_to_numeric_ansatz(best_params)
             
             y_pred_remainder_rescaled = numexpr.evaluate(
-                ex = ansatz.reduce_to_numeric_ansatz(best_params), 
+                ex = best_numeric_ansatz, 
                 local_dict = self._numexpr_local_dict,
             )
                 
@@ -190,12 +204,23 @@ class IdeaSearchFitter:
             )
                 
             score = self._metric_mapper(best_metric_value)
-            info = (
-                f"得分：{score:.2f}\n"
-                f"拟设：{idea}\n"
-                f"{metric_type}：{true_metric_value:.8g}\n"
-                f"最优参数：{best_params_msg}"
-                f"最优参数下拟合模型的残差分析：\n{residual_report}"
+            info_dict = {
+                "ansatz": idea,
+                "score": score,
+                f"{metric_type}": true_metric_value,
+                "best_parameters": best_params_msg,
+                "best_numeric_ansatz": best_numeric_ansatz,
+                "best_numeric_ansatz_residual_report": residual_report,
+                "created_at": get_time_stamp(show_minute=True, show_second=True),
+            }
+            if self._generate_fuzzy:
+                info_dict["fuzzy_enlightor"] = self._idea_to_fuzzy.get(idea, "NOT AVAILABLE")
+            info = serialize_json(info_dict)
+            
+            self._update_pareto_frontier(
+                numeric_ansatz = best_numeric_ansatz,
+                metric_value = best_metric_value,
+                info_dict = info_dict,
             )
             
             return score, info
@@ -267,9 +292,10 @@ class IdeaSearchFitter:
             temperature = 0.0,
         )
         
-        llm_answer = re.sub(r'[`\'\"<>]', '', llm_response)
+        idea = re.sub(r'[`\'\"<>]', '', llm_response)
+        self._idea_to_fuzzy[idea] = raw_response
 
-        return llm_answer
+        return idea
         
     
     def mutation_func(
@@ -360,6 +386,7 @@ class IdeaSearchFitter:
     
     def _preflight_check(
         self,
+        result_path: str,
         data: Optional[Dict[str, ndarray]],
         data_path: Optional[str],
         perform_unit_validation: bool,
@@ -369,6 +396,11 @@ class IdeaSearchFitter:
         generate_fuzzy: bool,
         fuzzy_translator: Optional[str],
     )-> None:
+        
+        if not os.path.isdir(result_path):
+            raise ValueError(translate(
+                "【IdeaSearchFitter】初始化时出错：result_path 应指向一存在的文件夹，用于存放帕累托前沿等拟合结果！"
+            ))
         
         if (data is None and data_path is None) or \
             (data is not None and data_path is not None):  
@@ -941,3 +973,73 @@ class IdeaSearchFitter:
             )
             
             self._best_fit = ansatz.reduce_to_numeric_ansatz(best_params)
+            
+            
+    def _update_pareto_frontier(
+        self,
+        numeric_ansatz: str,
+        metric_value: float,
+        info_dict: Dict[str, Any],
+    )-> None:
+        
+        with self._pareto_frontier_lock:
+            
+            complexity = get_pareto_complexity(
+                numeric_ansatz = numeric_ansatz,
+            )
+            assert isinstance(complexity, int)
+                
+            metric_type = "reduced chi squared" \
+                if (self._error is not None) else "mean square error"
+            is_dominated = False
+            
+            # maintain pareto frontier
+            dominated_keys = []
+            for existing_complexity, existing_info_dict in self._pareto_frontier.items():
+                existing_metric_value = existing_info_dict[f"{metric_type}"]
+                if existing_complexity <= complexity and existing_metric_value <= metric_value:
+                    is_dominated = True; break
+                if complexity <= existing_complexity and metric_value <= existing_metric_value:
+                    dominated_keys.append(existing_complexity)
+            if is_dominated: return
+            for key in dominated_keys: del self._pareto_frontier[key]
+            self._pareto_frontier[complexity] = info_dict
+
+            # sync pareto data 
+            with open(
+                file = self._pareto_data_path, 
+                mode = "w", 
+                encoding = "UTF-8",
+            ) as file_pointer:
+                json.dump(
+                    self._pareto_frontier, 
+                    file_pointer, 
+                    indent = 4, 
+                    ensure_ascii = False,
+                )
+
+            # sync pareto report
+            with open(
+                file = self._pareto_report_path, 
+                mode = "w", 
+                encoding="UTF-8",
+            ) as file_pointer:
+                
+                file_pointer.write("="*50 + "\n")
+                file_pointer.write("           Pareto Frontier Report\n")
+                file_pointer.write("="*50 + "\n\n")
+
+                sorted_frontier = sorted(self._pareto_frontier.items())
+
+                for complexity, info in sorted_frontier:
+                    metric_val = info.get(metric_type, "N/A")
+                    if isinstance(metric_val, (float, int)):
+                        metric_str = f"{metric_val:.7g}"
+                    else:
+                        metric_str = "N/A"
+                    file_pointer.write(f"Complexity: {complexity}\n")
+                    file_pointer.write(f"{metric_type.title()}: {metric_str}\n")
+                    file_pointer.write(f"Formula: {info.get('ansatz', 'N/A')}\n")
+                    file_pointer.write(f"Timestamp: {info.get('created_at', 'N/A')}\n")
+                    file_pointer.write(f"Best Parameters:{info.get('best_parameters', 'N/A')}\n\n")
+                    file_pointer.write("-" * 50 + "\n\n")
