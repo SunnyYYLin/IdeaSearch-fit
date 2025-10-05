@@ -1,8 +1,5 @@
-from .i18n import translate
-from .unit_validator import validate_unit
-from .typing import *
-from .external import *
-from .pywheels import *
+from .utils import *
+from .unit_validator import *
 
 
 __all__ = [
@@ -16,6 +13,11 @@ _numexpr_supported_functions: List[str] = [
 ]
 
 
+_default_functions: List[str] = [
+    "sin", "cos", "tan", "arcsin", "arccos", "arctan", "tanh", "log", "log10", "exp", "square", "sqrt", "abs",
+]
+
+
 class IdeaSearchFitter:
     
     # ------------------------- IdeaSearchFitter初始化 -------------------------
@@ -25,18 +27,19 @@ class IdeaSearchFitter:
         data: Optional[Dict[str, ndarray]] = None,
         data_path: Optional[str] = None,
         existing_fit: str = "0.0",
-        functions: List[str] = _numexpr_supported_functions.copy(),
+        functions: List[str] = _default_functions.copy(),
         constant_whitelist: List[str] = [],
         constant_map: Dict[str, float] = {"pi": np.pi},
         perform_unit_validation: bool = False,
         input_description: Optional[str] = None,
-        variable_descreption: Optional[Dict[str, str]] = None,
+        variable_description: Optional[Dict[str, str]] = None,
         variable_names: Optional[List[str]] = None,
         variable_units: Optional[List[str]] = None,
-        output_descreption: Optional[str] = None,
+        output_description: Optional[str] = None,
         output_name: Optional[str] = None,
         output_unit: Optional[str] = None,
-        generate_fuzzy: bool = False,
+        generate_fuzzy: bool = True,
+        fuzzy_translator: Optional[str] = None,
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 20.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
@@ -54,6 +57,8 @@ class IdeaSearchFitter:
             variable_names = variable_names,
             variable_units = variable_units,
             output_unit = output_unit,
+            generate_fuzzy = generate_fuzzy,
+            fuzzy_translator = fuzzy_translator,
         )
         
         self._random_generator = default_rng(seed)
@@ -63,11 +68,12 @@ class IdeaSearchFitter:
         self._auto_rescale: bool = auto_rescale
         self._adjust_degrees_of_freedom: bool = adjust_degrees_of_freedom
         self._generate_fuzzy: bool = generate_fuzzy
+        self._fuzzy_translator = fuzzy_translator
         
         self._output_unit: Optional[str] = output_unit
         self._output_name: Optional[str] = output_name
-        self._variable_descreption: Optional[Dict[str,str]] = variable_descreption
-        self._output_descreption: Optional[str] = output_descreption
+        self._variable_description: Optional[Dict[str,str]] = variable_description
+        self._output_description: Optional[str] = output_description
         self._input_description: Optional[str] = input_description
 
         self._initialize_data(data, data_path)
@@ -107,9 +113,6 @@ class IdeaSearchFitter:
         self,
         idea: str
     )-> Tuple[float, Optional[str]]:
-        
-        if self._generate_fuzzy:
-            idea = self._translate_fuzzy_to_idea(idea)
         
         try:
             
@@ -201,6 +204,74 @@ class IdeaSearchFitter:
             return -1.0, f"拟合出错：{error}"
         
         
+    def postprocess_func(
+        self, 
+        raw_response: str, 
+    )-> str:
+        
+        if not self._generate_fuzzy: return raw_response
+        assert self._fuzzy_translator is not None
+        fuzzy = raw_response
+
+        prologue_section_variable_string = ", ".join(
+            [f'"{variable}"' for variable in self._variables]
+        )
+        prologue_section_function_string = ", ".join(
+            [f'"{function}"' for function in self._functions]
+        )
+        prologue_section_number_string = ", ".join(
+            [f'"{number}"' for number in self._constant_whitelist]
+        )
+
+        system_prompt = (
+            "You are a code translator that strictly follows instructions."
+            "Your task is to convert a theoretical description, which includes natural language and standard mathematical formulas, into an expression string that strictly conforms to a specific syntax."
+        )
+        
+        formula_part = ""
+        final_result_pattern = r'<final_result>(.*?)</final_result>'
+        matches = re.findall(final_result_pattern, fuzzy, re.DOTALL)
+        
+        if matches:
+            formula_part = matches[-1].strip()
+        else:
+            formula_part = "[Final formula not found. Please construct the expression based on the theoretical description above.]"
+        
+        user_prompt = (
+            f"Please convert the mathematical formula from the following theoretical description into a strict ansatz expression.\n"
+            f"The theory from which the formula originates (for reference only):\n---\n{fuzzy}\n---\n\n"
+            f"Please strictly adhere to the following formatting rules:\n"
+            f"1.  **Ansatz Format**: The complete format is:\n{ansatz_docstring}\n"
+            f"2.  **Available Variables**: `variables = [{prologue_section_variable_string}]`\n"
+            f"3.  **Available Functions**: `functions = [{prologue_section_function_string}]`\n"
+            f"4.  **Available Constants**: `available constants = [{prologue_section_number_string}]`\n"
+            "    These are the only variables, functions, and constants you are allowed to use in the ansatz expression.\n"
+            "4.  **Legal Constants**: Do not use any constants outside of the available list (e.g., 0.3, 1.7, 9.7, 11).\n"
+            "    -   `3` can be written as `(x+x+x)/x` (where `x` is any variable).\n"
+            "    -   Numbers can also be constructed from variables and parameters. For example, `-4` could be `param1*param2` for later optimization, or written as `(-2-2)`.\n"
+            "5.  **Explicit Powers and Multiples**: You must explicitly write out multiples and powers, unless they can be constructed with available constants or functions.\n"
+            "    -   `3*x` must be written as `(x+x+x)`.\n"
+            "    -   `y**2` can be written as `(y**2)` or `(square(y))`.\n"
+            "6.  **Independent Parameters**: Avoid non-independent parameters. For example, `param1 * (param2 * x + param3)` should be refactored into a form like `param1 * x + param2` (by renaming parameters).\n"
+            "7.  **Parameter Range**: There are no strict limits on parameter ranges. However, since initial parameter values are sampled from (-10, 10), you may adjust the parameter's form (e.g., writing `param1` as `2**param1`) to avoid excessively large values and facilitate optimization.\n"
+            "8.  **At Least One Parameter**: Ensure the expression contains at least one parameter, `param1`, to enable subsequent optimization.\n"
+            "9.  **Output**: Output only the final expression string. Do not include any explanations, comments, or extra content, to facilitate its integration into our automated workflow.\n\n"
+            f"For example, if the input is `y = 2*x + 3` (where x is the independent variable and y is the dependent variable), you should output `2*x + param1` or `2 * x + 2 + param1`.\n"
+            f"Now, please convert this formula: `{formula_part}`"
+        )
+        
+        llm_response = get_answer(
+            prompt = user_prompt,
+            system_prompt = system_prompt,
+            model = self._fuzzy_translator,
+            temperature = 0.0,
+        )
+        
+        llm_answer = re.sub(r'[`\'\"<>]', '', llm_response)
+
+        return llm_answer
+        
+    
     def mutation_func(
         self,
         idea: str,
@@ -291,24 +362,29 @@ class IdeaSearchFitter:
         self,
         data: Optional[Dict[str, ndarray]],
         data_path: Optional[str],
-        perform_unit_validation: bool = False,
-        variable_names: Optional[List[str]] = None,
-        variable_units: Optional[List[str]] = None,
-        output_unit: Optional[str] = None,
+        perform_unit_validation: bool,
+        variable_names: Optional[List[str]],
+        variable_units: Optional[List[str]],
+        output_unit: Optional[str],
+        generate_fuzzy: bool,
+        fuzzy_translator: Optional[str],
     )-> None:
         
         if (data is None and data_path is None) or \
-            (data is not None and data_path is not None):
-                
+            (data is not None and data_path is not None):  
             raise ValueError(translate(
                 "【IdeaSearchFitter】初始化时出错：应在 data 与 data_path 间选择一个参数传入！"
             ))
             
         if perform_unit_validation and \
-            (variable_names is None or variable_units is None or output_unit is None):
-                
+            (variable_names is None or variable_units is None or output_unit is None): 
             raise ValueError(translate(
                 "【IdeaSearchFitter】初始化时出错：单位检查开启时必须传入 variable_names 、 variable_units 和 output_unit！"
+            ))
+            
+        if generate_fuzzy and fuzzy_translator is None:
+            raise ValueError(translate(
+                "【IdeaSearchFitter】 初始化时出错：生成中间模糊报告时必须设置模糊报告转译模型 fuzzy_translator！"
             ))
     
     
@@ -555,24 +631,24 @@ class IdeaSearchFitter:
             assert self._variable_units is not None
             assert self._output_unit is not None
             assert self._output_name is not None
-            if self._variable_descreption is None:
-                self._variable_descreption = {}
+            if self._variable_description is None:
+                self._variable_description = {}
             
-            if list(self._variable_descreption.keys()) != self._variables:
+            if list(self._variable_description.keys()) != self._variables:
                 for var in self._variables:
-                    if var not in self._variable_descreption:
-                        self._variable_descreption[var] = "未知物理量"
-            if self._output_descreption is None:
-                self._output_descreption = "未知物理量"
+                    if var not in self._variable_description:
+                        self._variable_description[var] = "Unknown physical quantity"
+            if self._output_description is None:
+                self._output_description = "Unknown physical quantity"
 
             variables_info = (
-                f"另外， {', '.join(self._variables)} 是物理量，"
-                f"这些物理量的单位分别为 {', '.join(self._variable_units)} ，"
-                f"这些物理量的含义为： {', '.join([var +':'+self._variable_descreption[var] for var in self._variables])} 。\n"
-                "为了简化问题，所有的可优化参数 param 都是无量纲（单位为 1 ）的；这些经验参数越少越好。\n"
-                f"你要用这些物理量和经验参数 param 构造一个表达式来描述一个单位为 {self._output_unit} 的物理量{self._output_name}"
-                f"这个物理量的含义为：{self._output_descreption}，请务必确保表达式的量纲的正确性。"
-                f"为此，必要时你可能需要构造一些无量纲量来进行复杂的函数运算，并随后将量纲匹配到目标输出{self._output_name}上。"
+                f"Additionally, {', '.join(self._variables)} are physical quantities, "
+                f"with respective units of {', '.join(self._variable_units)}, "
+                f"and their meanings are as follows: {', '.join([var +':'+self._variable_description[var] for var in self._variables])}.\n"
+                "To simplify the problem, all optimizable parameters, denoted as `param`, are dimensionless (unit of 1). The number of these empirical parameters should be minimized.\n"
+                f"Your task is to construct an expression using these physical quantities and empirical parameters to describe a physical quantity `{self._output_name}` with units of `{self._output_unit}`."
+                f"The meaning of this quantity is: {self._output_description}. It is crucial to ensure the dimensional correctness of the expression."
+                f"To achieve this, you may need to construct dimensionless quantities for complex function operations, and subsequently match the dimensions to the target output `{self._output_name}`."
             )
 
             if self._input_description:
@@ -581,41 +657,41 @@ class IdeaSearchFitter:
         else:
         
             variables_info = (
-                f"另外，由于 {', '.join(self._variables)} 实际上是物理量，"
-                f"我们鼓励你在将 {', '.join(self._variables)} 设为函数自变量前设置一个参数与之相乘。\n"
+                f"Additionally, since {', '.join(self._variables)} are physical quantities, "
+                f"we encourage you to multiply them by a parameter before using them as function arguments.\n"
             )
         
         self.system_prompt: str = (
-            "你是一个严格遵循指令、擅长根据已有拟设结构生成具有创新性且符合格式的新拟设表达式的实验科学家。"
-            "你会观察已有拟设的表现，从中总结规律，生成既合法又可能更优的 expression 表达式。"
+            "You are an experimental scientist who strictly follows instructions, adept at generating innovative and correctly formatted new ansatz expressions based on existing structures."
+            "You will observe the performance of existing ansaetze, summarize patterns, and generate new `expression` strings that are both valid and potentially superior."
         )
         
         self.prologue_section: str = (
-            f"首先，请你阅读以下拟设格式规则：{ansatz_docstring}\n"
-            "在本任务中，你只需生成 expression 部分，variables 和 functions 已经固定，分别为：\n"
+            f"First, please review the following ansatz formatting rules:\n{ansatz_docstring}\n"
+            "In this task, you only need to generate the `expression` part. The `variables` and `functions` are fixed as follows:\n"
             f"variables = [{prologue_section_variable_string}]\n"
             f"functions = [{prologue_section_function_string}]\n"
-            "请注意这些是你唯一可以使用的变量和函数。\n"
-            f"其次，请查看待拟合函数的一份简短报告：\n{self._data_info}\n"
-            "然后，为了帮助你理解风格和注意事项，我们先提供一些已有的 expression 示例，请仔细观察它们的结构与潜在问题，总结经验教训后再开始生成：\n"
+            "Note that these are the only variables and functions you are allowed to use.\n"
+            f"Second, please review a brief report on the function to be fitted:\n{self._data_info}\n"
+            "Next, to help you understand the required style and important considerations, we provide some examples of existing `expression`s. Please carefully observe their structure and potential issues, learn from them, and then begin your generation:\n"
         )
         
         self.epilogue_section: str = (
-            "分析以上示例时，如果你发现一些特征，可能可以以启发式的方法重构参数，例如，"
-            "如果某个参数的最优值始终非常接近零，说明它在该任务中作用不大，"
-            "你可以考虑在新的拟设中去除这一参数，以提高结构紧凑性与有效性。\n"
-            "同样的，如果某两个参数相近，某个参数列接近一个函数的泰勒展开系数等等，都可能能够帮助你注意到或者猜出更合理的函数形式"
+            "When analyzing the examples, if you identify certain features, you might heuristically restructure the parameters. For example, "
+            "if the optimal value of a parameter is consistently close to zero, it suggests it has little impact on the task. "
+            "You might consider removing this parameter in your new ansatz to improve structural compactness and effectiveness.\n"
+            "Similarly, if two parameters are close in value, or if a series of parameters resembles the Taylor expansion coefficients of a function, these observations might help you notice or deduce a more reasonable functional form."
             f"{variables_info}"
-            "其次，如果遇到非独立参数（例如 param1 * (param2 * x + param3)），"
-            "请将其整理为 param1 * x + param2 的形式，让各个参数尽量独立。\n"
-            "最后，注意拟设格式规则意味着你需要显式写出倍数和幂率\n"
-            "比如你必须将3*x写作(x+x+x)，或将y**2写作(y*y)，这样才能确保函数被正确读取。\n"
-            "拟设格式规则同样要求你不得使用1，0，-1等数字，这就意味着你必须将1写作(x/x)，x**-1写作param1/(param1*x)等形式。\n"
-            "现在，请你开始生成 expression 表达式。"
-            "请记住，直接输出合法的表达式字符串，不要包含解释、注释或额外内容，方便我们接入自动任务流。"
+            "Furthermore, if you encounter non-independent parameters (e.g., `param1 * (param2 * x + param3)`), "
+            "please refactor them into a form like `param1 * x + param2` to make each parameter as independent as possible.\n"
+            "Finally, note that the ansatz formatting rules require you to explicitly write out multiplications and powers.\n"
+            "For instance, you must write `3*x` as `(x+x+x)` and `y**2` as `(y*y)` to ensure the function is parsed correctly.\n"
+            "The rules also forbid the use of numeric literals like 1, 0, or -1. This means you must represent 1 as `(x/x)`, `x**-1` as `param1/(param1*x)`, or in similar forms.\n"
+            "Now, please begin generating the `expression` string."
+            "Remember to output only the valid expression string, without any explanations, comments, or extra content, to facilitate its integration into our automated workflow."
         )
-        
-    
+
+
     def _set_prompts_for_fuzzy(
         self,
     )-> None:
@@ -646,117 +722,74 @@ class IdeaSearchFitter:
             if self._variable_descreption.keys() != self._variables:
                 for var in self._variables:
                     if var not in self._variable_descreption:
-                        self._variable_descreption[var] = "未知物理量"
+                        self._variable_descreption[var] = "Unknown quantity"
                         
             if self._output_descreption is None:
-                self._output_descreption = "未知物理量"
+                self._output_descreption = "Unknown quantity"
 
             variables_info = (
-                f"另外， {', '.join(self._variables)} 是物理量，"
-                f"这些物理量的单位分别为 {', '.join(self._variable_units)} ，"
-                f"这些物理量的含义为： {', '.join([var +':' + self._variable_descreption[var] for var in self._variables])} 。\n"
-                "为了简化问题，所有的可优化参数 param 都是无量纲（单位为 1 ）的；这些经验参数越少越好。\n"
-                f"你要用这些物理量和经验参数 param 构造一个表达式来描述一个单位为 {self._output_unit} 的物理量{self._output_name}"
-                f"这个物理量的含义为：{self._output_descreption}，请务必确保表达式的量纲的正确性。"
-                f"为此，必要时你可能需要构造一些无量纲量来进行复杂的函数运算，并随后将量纲匹配到目标输出{self._output_name}上。"
+                f"Additionally, {', '.join(self._variables)} are physical quantities, "
+                f"with respective units of {', '.join(self._variable_units)}, "
+                f"and their meanings are as follows: {', '.join([var +':' + self._variable_descreption[var] for var in self._variables])}.\n"
+                "To simplify the problem, all optimizable parameters, denoted as `param`, are dimensionless (unit of 1). The number of these empirical parameters should be minimized.\n"
+                f"Your task is to construct an expression using these physical quantities and empirical parameters to describe a physical quantity `{self._output_name}` with units of `{self._output_unit}`."
+                f"The meaning of this quantity is: {self._output_descreption}. It is crucial to ensure the dimensional correctness of the expression."
+                f"To achieve this, you may need to construct dimensionless quantities for complex function operations, and subsequently match the dimensions to the target output `{self._output_name}`."
             )
             
             if self._input_description:
                 variables_info = self._input_description + "\n" + variables_info
                 
         else:
+            assert self._output_name is not None
+            
+            if self._variable_descreption is None:
+                self._variable_descreption = {}
+
+            if self._variable_descreption.keys() != self._variables:
+                for var in self._variables:
+                    if var not in self._variable_descreption:
+                        self._variable_descreption[var] = "[Undefined Meaning]"
+                        
+            if self._output_descreption is None:
+                self._output_descreption = "[Undefined Meaning]"
+
             variables_info = (
-                f"另外，由于 {', '.join(self._variables)} 实际上是物理量，"
-                f"我们鼓励你在将 {', '.join(self._variables)} 设为函数自变量前设置一个参数与之相乘。\n"
+                f"Additionally, {', '.join(self._variables)} are the input quantities, "
+                f"and their meanings are as follows: {', '.join([var +':' + self._variable_descreption[var] for var in self._variables])}.\n"
+                "To simplify the problem, all optimizable empirical parameters, denoted as `param`, should be as few as possible and preferably dimensionless.\n"
+                f"Your task is to construct an expression using these quantities and empirical parameters to describe a target quantity: `{self._output_name}`."
+                f"The meaning of this target quantity is: {self._output_descreption}."
             )
+            
+            if self._input_description:
+                variables_info = self._input_description + "\n" + variables_info
 
         self.system_prompt: str = (
-            "你是一位富有创造力的物理学家和数据科学家，擅长从数据中发现潜在的规律，并用自然语言和数学公式清晰地表达出来。"
-            "你的任务是分析给定的数据和背景信息，提出一个关于其背后物理机制的连贯的理论分析，并给出一个最能描述该理论的数学公式。"
+            "You are a creative data scientist, skilled at discovering underlying patterns in data and articulating them clearly through natural language and mathematical formulas."
+            "Your task is to analyze the given data and background information, propose a coherent theoretical analysis of the underlying mechanism, and provide the mathematical formula that best describes this theory."
         )
 
         self.prologue_section: str = (
-            "首先，请你理解本任务的背景信息：\n"
-            "我们正在尝试寻找一个数学表达式来拟合一组实验数据。\n"
-            f"可用的自变量为: [{prologue_section_variable_string}]\n"
-            f"可用的函数为: [{prologue_section_function_string}]\n"
-            f"其次，请查看待拟合函数的一份简短报告：\n{self._data_info}\n"
-            "然后，为了帮助你理解风格和注意事项，我们先提供一些已有的 expression 示例，请仔细观察它们的结构与潜在问题，总结经验教训后再开始生成，一定不许重复示例中的内容：\n"
+            "First, please understand the background information for this task:\n"
+            "We are attempting to find a mathematical expression to fit a set of experimental data.\n"
+            f"The available independent variables are: [{prologue_section_variable_string}]\n"
+            f"The available functions are: [{prologue_section_function_string}]\n"
+            f"Second, please review a brief report on the function to be fitted:\n{self._data_info}\n"
+            "Next, to help you understand the style and important considerations, we provide some examples of existing expressions. Please carefully observe their structure and potential issues, learn from them, and then begin your generation. You must not repeat the content from the examples:\n"
         )
 
         self.epilogue_section: str = (
-            "分析以上示例时，如果你发现一些特征，可能可以以启发式的方法重构参数，例如，"
-            "如果某个参数的最优值始终非常接近零，说明它在该任务中作用不大。\n"
-            "同样的，如果某两个参数相近，某个参数列接近一个函数的泰勒展开系数等等，都可能能够帮助你注意到或者猜出更合理的函数形式。\n"
+            "When analyzing the examples, if you identify certain features, you might heuristically restructure the parameters. For example, "
+            "if the optimal value of a parameter is consistently close to zero, it suggests it has little impact on the task.\n"
+            "Similarly, if two parameters are close in value, or if a series of parameters resembles the Taylor expansion coefficients of a function, these observations might help you notice or deduce a more reasonable functional form.\n"
             f"{variables_info}\n"
-            "现在，请你开始撰写你的分析理论。\n"
-            "你的回答应该包含两部分：\n"
-            "1.  **理论分析**：一段连贯的文字，阐述你对数据背后规律的洞察和推理过程。\n"
-            "2.  **数学公式**：在分析的最后，请给出一个你认为最合适的数学公式。请使用标准的数学排版，并用 `<final_result>` 将其包裹起来，例如 `<final_result> y = a * sin(b * x) + c </final_result>`。\n"
-            "请确保你的分析富有洞察力，公式有合理的物理含义，且不与示例中内容重复。"
+            "Now, please begin writing your theoretical analysis.\n"
+            "Your response should consist of two parts:\n"
+            "1.  **Theoretical Analysis**: A coherent text explaining your insights and reasoning process regarding the underlying patterns in the data.\n"
+            "2.  **Mathematical Formula**: At the end of your analysis, provide what you believe is the most suitable mathematical formula. Please use standard mathematical typesetting and enclose it in `<final_result>` tags, for example: `<final_result> y = a * sin(b * x) + c </final_result>`.\n"
+            "Please ensure your analysis is insightful, the formula has a reasonable theoretical meaning, and its content does not overlap with the examples provided."
         )
-
-
-    def _translate_fuzzy_to_idea(
-        self, 
-        fuzzy: str, 
-    )-> str:
-
-        prologue_section_variable_string = ", ".join(
-            [f'"{variable}"' for variable in self._variables]
-        )
-        prologue_section_function_string = ", ".join(
-            [f'"{function}"' for function in self._functions]
-        )
-
-        system_prompt = (
-            "你是一个严格遵循指令的代码转换器。"
-            "你的任务是将一个包含自然语言和标准数学公式的理论描述，转换成一个严格符合特定语法的表达式字符串。"
-        )
-        
-        formula_part = ""
-        final_result_pattern = r'<final_result>(.*?)</final_result>'
-        matches = re.findall(final_result_pattern, fuzzy, re.DOTALL)
-        
-        if matches:
-            formula_part = matches[-1].strip()
-        else:
-            formula_part = '[未找到最终公式，请参考上面的理论描述结果构造表达式]'
-    
-        
-        user_prompt = (
-            f"请将以下理论描述中的数学公式转换成严格的拟设表达式。\n"
-            f"公式所来自的理论（仅参考）：\n---\n{fuzzy}\n---\n\n"
-            f"请严格遵守以下格式规则：\n"
-            f"1.  **拟设格式**: 完整格式为：\n{ansatz_docstring}\n"
-            f"2.  **可用变量**: `variables = [{prologue_section_variable_string}]`\n"
-            f"3.  **可用函数**: `functions = [{prologue_section_function_string}]`\n"
-            "    这些是你在拟设表达式中唯一可以使用的变量和函数。\n"
-            "4.  **无数字**: 不得使用任何数字（如 1, 0, -1, 3.14）。\n"
-            "    -   `1` 必须写成 `(x/x)` (其中 `x` 是任意变量)。\n"
-            "    -   `-1` 必须写成 `(x-x)-y/y` 的形式。\n"
-            "    -   其他数字必须通过变量和参数构造，例如 `2` 可以是 `param1/param2` 并在后续优化，或者写成 `(x+x)/x`。\n"
-            "5.  **显式乘幂**: 必须显式写出倍数和幂率。\n"
-            "    -   `3*x` 必须写成 `(x+x+x)`。\n"
-            "    -   `y**2` 必须写成 `(y*y)`。\n"
-            "    -   `y**-1` 必须写成 `(x/x)/y` 的形式。\n"
-            "6.  **独立参数**: 避免非独立参数。例如，`param1 * (param2 * x + param3)` 应整理为 `param1 * x + param2` 的形式（通过重命名参数）。\n"
-            "7.  **至少一个参数**： 确保表达式中至少包含一个参数 `param1`，以便后续优化。\n"
-            "7.  **输出**: 只输出最终的表达式字符串，不要包含任何解释、注释或额外内容。以便于我们接入自动处理信息流。\n\n"
-            f"例如，如果给你的内容是 `y = 2*x + 1（其中x为自变量，y为因变量）`，你应该输出 `(x+x) + param1 * (x/x)`或`param1 * x + (x/x)`。\n"
-            f"现在，请转换这个公式：`{formula_part}`"
-        )
-        
-        llm_response = get_answer(
-            prompt = user_prompt,
-            system_prompt = system_prompt,
-            model = "Qwen_Max",
-            temperature = 0.0,
-        )
-        
-        llm_answer = re.sub(r'[`\'\"<>]', '', llm_response)
-
-        return llm_answer
 
 
     def _set_naive_linear_idea(

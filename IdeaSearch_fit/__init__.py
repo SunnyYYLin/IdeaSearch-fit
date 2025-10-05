@@ -1,5 +1,5 @@
-from .i18n import set_language
-from .i18n import init_language
+from .utils.i18n import set_language
+from .utils.i18n import init_language
 from .fitter import IdeaSearchFitter
 
 
