@@ -631,18 +631,18 @@ Ensure your final output is a raw JSON string without any surrounding text, expl
         x_max = self._x_rescaled.max(axis=0)
         
         for i, var_name in enumerate(self._variables):
-            report_lines.append(f"{var_name}: 范围 [{x_min[i]:.4f}, {x_max[i]:.4f}]")
+            report_lines.append(f"{var_name}: Range [{x_min[i]:.4g}, {x_max[i]:.4g}]")
         
         report_lines.append("")
         
         y_min = y_data.min()
         y_max = y_data.max()
-        report_lines.append(f"输出范围: [{y_min:.4f}, {y_max:.4f}]")
-  
+        report_lines.append(f"Output range: [{y_min:.4g}, {y_max:.4g}]")
+
         report_lines.append("")
-        report_lines.append(f"样本数: {n_samples}")
-        report_lines.append(f"输出均值: {np.mean(y_data):.4f}")
-        report_lines.append(f"输出标准差: {np.std(y_data):.4f}")
+        report_lines.append(f"Number of samples: {n_samples}")
+        report_lines.append(f"Output mean: {np.mean(y_data):.4g}")
+        report_lines.append(f"Output standard deviation: {np.std(y_data):.4g}")
         
         self._data_info = "\n".join(report_lines)
         
@@ -663,7 +663,7 @@ Ensure your final output is a raw JSON string without any surrounding text, expl
         mae = np.mean(abs_residuals)
         max_error = np.max(abs_residuals)
         
-        report_lines.append(f"拟合误差: MSE={mse:.3e}, MAE={mae:.3e}, 最大误差={max_error:.3e}")
+        report_lines.append(f"Fit Error: MSE={mse:.3e}, MAE={mae:.3e}, Max Error={max_error:.3e}")
         
         return "\n".join(report_lines)
         
