@@ -528,22 +528,29 @@ class IdeaSearchFitter:
         expected_keys_string = ", ".join(f'"{key}"' for key in self._variables)
         
         prompt = f"""
-    As a domain expert, your task is to provide clear, concise descriptions for the following variables based on the provided information.
+As a domain expert, your task is to provide clear, concise descriptions for the following variables based on the provided information.
 
-    ### Variables
-    - **Input Features**: {input_variable_string}
-    - **Target Variable**: {output_variable_string}
+### Variables
+- **Input Features**: {input_variable_string}
+- **Target Variable**: {output_variable_string}
 
-    ### Instructions
-    1.  **Analyze**: Infer the likely meaning of each variable based on its name and unit.
-    2.  **Describe**: Provide a concise, one to two-sentence explanation for each variable. If a variable's meaning is ambiguous, state that it is unclear or list the possible interpretations instead of inventing a definition.
-    3.  **Format**: Your response MUST be a single, valid JSON object containing the following three keys:
-        - `input_description`: A string providing a brief, high-level overview of the dataset or physical system.
-        - `variable_descriptions`: A dictionary where each key is a feature variable name and the value is its description. This dictionary **MUST** contain entries for exactly the following keys: {expected_keys_string}.
-        - `output_description`: A string describing the meaning of the target variable.
+### Instructions
+1.  **Analyze**: Infer the likely meaning of each variable based on its name and unit.
+2.  **Describe**: Provide a concise, one to two-sentence explanation for each variable. If a variable's meaning is ambiguous, state that it is unclear or list the possible interpretations instead of inventing a definition.
+3.  **Format**: Your response MUST be a single, valid JSON object wrapped in a markdown code block. For example:
+    ```json
+    {{
+    "input_description": "...",
+    "variable_descriptions": {{...}},
+    "output_description": "..."
+    }}
+    ```
+    - `input_description`: A string providing a brief, high-level overview of the dataset or physical system.
+    - `variable_descriptions`: A dictionary where each key is a feature variable name and the value is its description. This dictionary **MUST** contain entries for exactly the following keys: {expected_keys_string}.
+    - `output_description`: A string describing the meaning of the target variable.
 
-    Ensure your final output is a raw JSON string without any surrounding text, explanations, or code fences (e.g., ```json). Pay strict attention to correct quoting and escaping to ensure it is parsable.
-    """
+Ensure your final output is only the markdown block containing the JSON, without any other surrounding text or explanations.
+"""
 
         polished_results: Dict[str, Any] = {}
         def check_and_accept(
@@ -551,9 +558,10 @@ class IdeaSearchFitter:
         )-> bool:
             nonlocal polished_results
             try:
-                json_match = re.search(r"\{.*\}", response, re.DOTALL)
+                pattern = r"```json\s*\n(.*?)\n```"
+                json_match = re.search(pattern, response, re.DOTALL)
                 assert json_match
-                json_string = json_match.group(0)
+                json_string = json_match.group(1).strip()
                 
                 data = json.loads(json_string)
                 if not isinstance(data, dict): return False
