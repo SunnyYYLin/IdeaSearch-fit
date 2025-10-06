@@ -93,11 +93,12 @@ class IdeaSearchFitter:
         self._output_description: Optional[str] = output_description
         self._input_description: Optional[str] = input_description
         self._auto_polisher = auto_polisher
-        if auto_polish: self._auto_polish()
 
         self._initialize_data(data, data_path)
         self._process_data()
         self._set_variables(variable_names, variable_units)
+        
+        if auto_polish: self._auto_polish()
         self._analyze_data()
         self._set_functions(functions)
         self._constant_whitelist = constant_whitelist
@@ -499,6 +500,10 @@ class IdeaSearchFitter:
         self,
     )-> None:
         
+        # Skip auto_polish if output_name is not provided
+        if self._output_name is None:
+            return
+        
         if all(item is not None for item in [
             self._input_description,
             self._variable_descriptions,
@@ -514,10 +519,8 @@ class IdeaSearchFitter:
             ))
 
         if self._output_unit is None:
-            assert self._output_name is not None
             output_variable_string = self._output_name
         else:
-            assert self._output_name is not None
             output_variable_string = f"{self._output_name} ({self._output_unit})"
         
         system_prompt = "You are a domain expert skilled at inferring the physical or conceptual meaning of variables from their names and associated units."
