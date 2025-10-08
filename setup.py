@@ -8,7 +8,7 @@ packages = [
 
 setup(
     name = "ideasearch_fit",
-    version = "0.0.5",
+    version = "0.0.5.1",
     packages = packages,
     description = "Extension of IdeaSearch for data fitting",
     author = "parkcai",
