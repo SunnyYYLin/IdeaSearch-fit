@@ -143,91 +143,114 @@
 
 ## 工作流程
 
-以下是一个完整的工作流程示例，展示了如何使用 `IdeaSearch-fit` 和 `IdeaSearch` 解决一个符号回归问题。
+以下是一个完整的工作流程示例（[https://github.com/IdeaSearch/IdeaSearch-fit-test](https://github.com/IdeaSearch/IdeaSearch-fit-test)），展示了如何使用 `IdeaSearch-fit` 和 `IdeaSearch` 解决一个符号回归问题。
 
 ```python
 import numpy as np
 from IdeaSearch import IdeaSearcher
 from IdeaSearch_fit import IdeaSearchFitter
 
+
+def build_data():
+    """
+    构建用于拟合的模拟数据。
+    真实公式: x = 1.2*A + A*exp(-0.7*gamma*t) - A*exp(-0.5*gamma*t)*cos(3*omega*t)
+    """
+    n_samples = 1000
+    rng = np.random.default_rng(seed=42)
+
+    # 定义自变量的取值范围
+    A_range = (1.0, 10.0)
+    gamma_range = (0.1, 1.0)
+    omega_range = (1.0, 5.0)
+    t_range = (0.0, 10.0)
+
+    # 在范围内随机采样
+    A_samples = rng.uniform(A_range[0], A_range[1], n_samples)
+    gamma_samples = rng.uniform(gamma_range[0], gamma_range[1], n_samples)
+    omega_samples = rng.uniform(omega_range[0], omega_range[1], n_samples)
+    t_samples = rng.uniform(t_range[0], t_range[1], n_samples)
+
+    # 将自变量组合成 Fitter 需要的格式 (n_samples, n_features)
+    x_data = np.stack([A_samples, gamma_samples, omega_samples, t_samples], axis=1)
+
+    # 根据真实公式计算 y 值，并加入噪声
+    y_true = (1.2 * A_samples +
+              A_samples * np.exp(-0.7 * gamma_samples * t_samples) -
+              A_samples * np.exp(-0.5 * gamma_samples * t_samples) * np.cos(3 * omega_samples * t_samples))
+    error_data = 0.01 + 0.02 * np.abs(y_true)
+    y_data = y_true + rng.normal(0, error_data)
+
+    # 注意：本示例未将 error_data 传给 Fitter，因此将使用 MSE 作为度量
+    return {
+        "x": x_data,
+        "y": y_data,
+    }
+
+
 def main():
     # 1. 准备数据
-    # 假设我们要从数据中发现 f(t) = 1.23 * sin(4.56 * t) + 7.89
-    np.random.seed(42)
-    t_data = np.linspace(-10, 10, 100).reshape(-1, 1)
-    y_true = 1.23 * np.sin(4.56 * t_data.flatten()) + 7.89
-    y_error = np.random.normal(0.1, 0.01, y_true.shape) # 模拟测量误差
-    y_data = y_true + np.random.normal(0, y_error) # 基于误差生成带噪声的数据
-
-    # 核心输入: x, y, error
-    data_dict = {"x": t_data, "y": y_data, "error": y_error}
+    data = build_data()
 
     # 2. 初始化 IdeaSearchFitter
     fitter = IdeaSearchFitter(
-        # -- 任务输入与输出 --
-        data=data_dict,
-        result_path="./fit_results", # 确保此文件夹已创建
-
-        # -- 问题定义与量纲 --
-        perform_unit_validation=True,
-        variable_names=["t"],
-        variable_units=["s"],      # 假设 t 代表时间，单位是秒
-        output_name="position",
-        output_unit="m",          # 假设 y 代表位置，单位是米
-
-        # -- 搜索与进化策略 --
-        optimization_method="differential-evolution", # 选用全局优化算法
-        optimization_trial_num=200,                   # 增加优化尝试次数
-        enable_mutation=True,
-        enable_crossover=True,
+        result_path = "fit_results", # 确保此文件夹已创建
+        data = data,
+        variable_names = ["A", "gamma", "omega", "t"],
+        variable_units = ["m", "s^-1", "s^-1", "s"],
+        output_name = "x",
+        output_unit = "m",
+        constant_whitelist = ["1", "2", "pi"],
+        constant_map = {"1": 1, "2": 2, "pi": np.pi},
+        auto_polish = True,
+        generate_fuzzy = True,
+        perform_unit_validation = True,
+        optimization_method = "L-BFGS-B",
+        optimization_trial_num = 5,
     )
 
     # 3. 初始化 IdeaSearcher
     ideasearcher = IdeaSearcher()
 
     # 4. 基础配置
-    ideasearcher.set_language("zh_CN")
+    ideasearcher.set_program_name("IdeaSearch Fitter Test")
+    ideasearcher.set_database_path("database") # 确保此文件夹已创建
     ideasearcher.set_api_keys_path("api_keys.json")
-    ideasearcher.set_program_name("PhysicsFormulaDiscovery")
-    ideasearcher.set_database_path("./database")
+    ideasearcher.set_models(["gemini-2.5-pro"]) # 使用您期望的模型
+
+    ideasearcher.set_record_prompt_in_diary(True) # 可选配置：在日志中记录提示词
 
     # 5. 绑定 Fitter！ (最关键的一步)
     ideasearcher.bind_helper(fitter)
 
-    # 6. 配置模型与运行参数
-    ideasearcher.set_models(["Deepseek_V3"])
-    ideasearcher.set_model_temperatures([1.0])
-
-    # 7. 定义并执行进化循环
-    island_num = 2
+    # 6. 定义并执行进化循环
+    island_num = 3
     cycle_num = 3
-    unit_interaction_num = 10
+    unit_interaction_num = 20
 
     for _ in range(island_num):
         ideasearcher.add_island()
 
     for cycle in range(cycle_num):
         print(f"---[ 周期 {cycle + 1}/{cycle_num} ]---")
-        if cycle != 0:
-            ideasearcher.repopulate_islands()
+        if cycle != 0: ideasearcher.repopulate_islands()
         ideasearcher.run(unit_interaction_num)
+        print("完成。")
 
-    # 8. 获取并展示结果
+    # 7. 获取并展示结果
     print("\n---[ 搜索完成 ]---")
+    print(f"最佳拟合公式: {fitter.get_best_fit()}")
 
-    # 获取单一最佳拟合
-    best_fit_formula = fitter.get_best_fit()
-    print(f"最佳拟合公式: {best_fit_formula}")
-
-    # 获取帕累托前沿 (核心输出)
-    pareto_frontier = fitter.get_pareto_frontier()
     print("\n帕累托前沿上的最优解集:")
-    # 按复杂度排序输出
-    for complexity, info in sorted(pareto_frontier.items()):
-        # 如果提供了误差，度量标准为约化卡方；否则为均方误差
-        metric_key = "reduced chi squared" if "reduced chi squared" in info else "mean square error"
-        metric_value = info[metric_key]
-        print(f"  - 复杂度: {complexity}, 误差: {metric_value:.4g}, 公式: {info['ansatz']}")
+    pareto_frontier = fitter.get_pareto_frontier()
+    if not pareto_frontier:
+        print("  - 未在帕累托前沿上找到解。")
+    else:
+        for complexity, info in sorted(pareto_frontier.items()):
+            metric_key = "reduced chi squared" if "reduced chi squared" in info else "mean square error"
+            metric_value = info.get(metric_key, float('nan'))
+            print(f"  - 复杂度: {complexity}, 误差: {metric_value:.4g}, 公式: {info.get('ansatz', 'N/A')}")
+
 
 if __name__ == "__main__":
     # 在运行前，请确保已创建 `./fit_results` 和 `./database` 文件夹
