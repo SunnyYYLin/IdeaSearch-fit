@@ -48,6 +48,8 @@ class IdeaSearchFitter:
         metric_mapping: Literal["linear", "logarithm"] = "linear",
         enable_mutation: bool = False,
         enable_crossover: bool = False,
+        optimization_method: Literal["L-BFGS-B", "differential-evolution"] = "L-BFGS-B",
+        optimization_trial_num: int = 100,
         seed: Optional[int] = None,
     )-> None:
         
@@ -71,6 +73,9 @@ class IdeaSearchFitter:
         if fuzzy_translator is None: fuzzy_translator = default_model
         
         self._random_generator = default_rng(seed)
+        
+        self._optimization_method: Literal["L-BFGS-B", "differential-evolution"] = optimization_method
+        self._optimization_trial_num = optimization_trial_num
         
         self._result_path = result_path
         self._pareto_report_path = f"{result_path}{seperator}pareto_report.txt"
@@ -1000,8 +1005,8 @@ Ensure your final output is only the markdown block containing the JSON, without
         best_params, best_metric_value = ansatz.apply_to(
             numeric_ansatz_user = numeric_ansatz_user,
             param_ranges = [natural_param_range] * ansatz_param_num,
-            trial_num = 100,
-            method = "L-BFGS-B",
+            trial_num = self._optimization_trial_num,
+            method = self._optimization_method,
         )
         
         return best_params, best_metric_value

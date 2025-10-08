@@ -4,7 +4,7 @@ from setuptools import find_packages
 
 setup(
     name = "IdeaSearch-fit",
-    version = "0.0.2",
+    version = "0.0.3",
     packages = find_packages(),
     description = "Extension of IdeaSearch for data fitting",
     author = "parkcai",
@@ -18,6 +18,6 @@ setup(
     install_requires = [
         "numpy>=1.21.0",
         "numexpr>=2.7.0",
-        "pywheels>=0.6.6",
+        "pywheels>=0.7.6.2",
     ],
 )

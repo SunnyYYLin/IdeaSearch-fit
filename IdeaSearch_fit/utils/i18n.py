@@ -35,10 +35,6 @@ def set_language(
     
     if language == "en": language = "en_US"
     if language == "zh": language = "zh_CN"
-    
-    if language == "zh_TW": 
-        print("zh_TW is not supported. Use zh instead.")
-        language = "zh"
 
     t = gettext.translation(
         domain = domain,
@@ -66,10 +62,6 @@ def init_language(
         language = "en"
         
     language = language.split('.')[0]
-    
-    if language == "zh_TW": 
-        print("zh_TW is not supported. Use zh instead.")
-        language = "zh"
     
     set_language(language)
 
