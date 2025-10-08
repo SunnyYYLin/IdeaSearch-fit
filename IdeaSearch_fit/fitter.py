@@ -161,7 +161,7 @@ class IdeaSearchFitter:
                 )
                 
                 if not unit_correctness:
-                    score = -2.0
+                    score = 0.0
                     info = f"拟设量纲错误！具体信息：{unit_validation_info}"
                     return score, info
 
