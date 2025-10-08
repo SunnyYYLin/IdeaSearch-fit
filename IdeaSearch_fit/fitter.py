@@ -506,8 +506,7 @@ class IdeaSearchFitter:
     )-> None:
         
         # Skip auto_polish if output_name is not provided
-        if self._output_name is None:
-            return
+        if self._output_name is None: return
         
         if all(item is not None for item in [
             self._input_description,
@@ -533,29 +532,34 @@ class IdeaSearchFitter:
         expected_keys_string = ", ".join(f'"{key}"' for key in self._variables)
         
         prompt = f"""
-As a domain expert, your task is to provide clear, concise descriptions for the following variables based on the provided information.
+    Act as a scientific consultant. Your task is to propose a plausible physical interpretation for a dataset based solely on its variable names and units. It is critical that you frame your entire response as a hypothesis or an educated guess, not as a definitive assertion.
 
-### Variables
-- **Input Features**: {input_variable_string}
-- **Target Variable**: {output_variable_string}
+    ### Variables
+    - **Input Features**: {input_variable_string}
+    - **Target Variable**: {output_variable_string}
 
-### Instructions
-1.  **Analyze**: Infer the likely meaning of each variable based on its name and unit.
-2.  **Describe**: Provide a concise, one to two-sentence explanation for each variable. If a variable's meaning is ambiguous, state that it is unclear or list the possible interpretations instead of inventing a definition.
-3.  **Format**: Your response MUST be a single, valid JSON object wrapped in a markdown code block. For example:
-    ```json
-    {{
-    "input_description": "...",
-    "variable_descriptions": {{...}},
-    "output_description": "..."
-    }}
-    ```
-    - `input_description`: A string providing a brief, high-level overview of the dataset or physical system.
-    - `variable_descriptions`: A dictionary where each key is a feature variable name and the value is its description. This dictionary **MUST** contain entries for exactly the following keys: {expected_keys_string}.
-    - `output_description`: A string describing the meaning of the target variable.
+    ### Instructions
+    1.  **Hypothesize**: Based on the variable names and units, formulate a hypothesis about a potential physical system or scenario they might describe.
+    2.  **Propose Interpretations**: For each component, provide a concise, one to two-sentence explanation that reflects your hypothesis.
+        -   **Crucially, use tentative language.** Your explanations must be framed as plausible interpretations, not as established facts. Use phrases like "This could represent...", "It is likely that...", "A possible interpretation is...", etc.
+        -   If a variable's meaning is highly ambiguous, acknowledge this by offering multiple competing hypotheses for its role. Do not invent a single, unsupported definition.
+    3.  **Format**: Your response MUST be a single, valid JSON object wrapped in a markdown code block. For example:
+        ```json
+        {{
+        "input_description": "A plausible scenario for this dataset could be the study of...",
+        "variable_descriptions": {{
+            "var1": "Given its unit, 'var1' might represent the...",
+            "var2": "It is plausible that 'var2' corresponds to the..."
+        }},
+        "output_description": "The target variable could be the resulting..."
+        }}
+        ```
+        -   `input_description`: A string providing a brief, high-level overview of your **hypothesized** physical system.
+        -   `variable_descriptions`: A dictionary where each key is a feature variable name and the value is its **proposed interpretation**. This dictionary **MUST** contain entries for exactly the following keys: {expected_keys_string}.
+        -   `output_description`: A string describing the **potential meaning** of the target variable within your hypothesis.
 
-Ensure your final output is only the markdown block containing the JSON, without any other surrounding text or explanations.
-"""
+    Ensure your final output is only the markdown block containing the JSON, without any other surrounding text or explanations.
+    """
 
         polished_results: Dict[str, Any] = {}
         def check_and_accept(
