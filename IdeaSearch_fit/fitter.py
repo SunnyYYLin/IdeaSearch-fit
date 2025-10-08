@@ -46,14 +46,14 @@ class IdeaSearchFitter:
         baseline_metric_value: Optional[float] = None, # metric value corresponding to score 20.0
         good_metric_value: Optional[float] = None, # metric value corresponding to score 80.0
         metric_mapping: Literal["linear", "logarithm"] = "linear",
-        enable_mutation: bool = False,
-        enable_crossover: bool = False,
         optimization_method: Literal["L-BFGS-B", "differential-evolution"] = "L-BFGS-B",
         optimization_trial_num: int = 100,
         seed: Optional[int] = None,
     )-> None:
         
         # Under development and testing
+        enable_mutation = False
+        enable_crossover = False
         auto_rescale = False
         existing_fit = "0.0"
         adjust_degrees_of_freedom = False
