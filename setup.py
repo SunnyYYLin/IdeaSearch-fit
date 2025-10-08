@@ -1,18 +1,26 @@
 from setuptools import setup
-from setuptools import find_packages
 
+packages = [
+    "IdeaSearch_fit",
+    "IdeaSearch_fit.miscellaneous",
+    "IdeaSearch_fit.utils",
+]
 
 setup(
     name = "IdeaSearch-fit",
     version = "0.0.3",
-    packages = find_packages(),
+    packages = packages,
     description = "Extension of IdeaSearch for data fitting",
     author = "parkcai",
     author_email = "sun_retailer@163.com",
     url = "https://github.com/IdeaSearch/IdeaSearch-fit",
-    include_package_data = True,
+    include_package_data = False,
     package_data = {
-        "IdeaSearch_fit": ["locales/**/LC_MESSAGES/*.mo"],
+        "IdeaSearch_fit": [
+            "locales/*/LC_MESSAGES/*.mo",
+            "locales/*/LC_MESSAGES/*.po",
+            "locales/*.pot",
+        ],
     },
     python_requires = ">=3.8",
     install_requires = [
