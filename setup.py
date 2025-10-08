@@ -7,8 +7,13 @@ packages = [
 ]
 
 setup(
+<<<<<<< HEAD
     name = "IdeaSearch-fit",
     version = "0.0.4",
+=======
+    name = "ideasearch_fit",
+    version = "0.0.5",
+>>>>>>> 9e0b7b6 (fix: build error)
     packages = packages,
     description = "Extension of IdeaSearch for data fitting",
     author = "parkcai",
