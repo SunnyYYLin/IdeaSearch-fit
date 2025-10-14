@@ -154,6 +154,7 @@ pip install IdeaSearch-fit
 以下是一个完整的工作流程示例（[https://github.com/IdeaSearch/IdeaSearch-fit-test](https://github.com/IdeaSearch/IdeaSearch-fit-test)），展示了如何使用 `IdeaSearch-fit` 和 `IdeaSearch` 解决一个符号回归问题。
 
 ```python
+# pip install IdeaSearch-fit
 import numpy as np
 from IdeaSearch import IdeaSearcher
 from IdeaSearch_fit import IdeaSearchFitter
