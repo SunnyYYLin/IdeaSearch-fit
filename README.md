@@ -1,8 +1,11 @@
 ﻿# About IdeaSearch-fit
 
-Install IdeaSearch-Fit using
-```plaintext
-pip install ideasearch-fit
+## Quick Start
+
+To install IdeaSearch-fit, run:
+
+```bash
+pip install IdeaSearch-fit
 ```
 
 ## Project Overview
@@ -151,6 +154,7 @@ All configurations for an `IdeaSearchFitter` instance are set in its `__init__` 
 The following is a complete workflow example (from [https://github.com/IdeaSearch/IdeaSearch-fit-test](https://github.com/IdeaSearch/IdeaSearch-fit-test)) that demonstrates how to solve a symbolic regression problem using `IdeaSearch-fit` and `IdeaSearch`.
 
 ```python
+# pip install IdeaSearch-fit
 import numpy as np
 from IdeaSearch import IdeaSearcher
 from IdeaSearch_fit import IdeaSearchFitter
@@ -263,4 +267,3 @@ if __name__ == "__main__":
     # 2. The 'api_keys.json' file is correctly configured.
     main()
 ```
-

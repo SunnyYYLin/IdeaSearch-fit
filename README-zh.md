@@ -1,5 +1,13 @@
 # 关于 IdeaSearch-fit
 
+## 快速开始
+
+运行以下指令以安装 IdeaSearch-fit：
+
+```bash
+pip install IdeaSearch-fit
+```
+
 ## 项目概述
 
 `IdeaSearch-fit` 是一款**基于 `IdeaSearch` 框架、专注于符号回归的科学公式发现工具**。它提供了 `IdeaSearchFitter` 类，该类被设计为一个高度集成的“助手 (Helper)”对象，通过 `IdeaSearch` 的 `bind_helper` 方法无缝对接。`IdeaSearch-fit` 融合了进化计算与大型语言模型的双重能力，旨在从实验或模拟数据中自动发现潜在的数学表达式。
