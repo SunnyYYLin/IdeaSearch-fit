@@ -5,3 +5,5 @@ dist/
 api_keys.json
 scripts/demo/database/
 venv/
+results/
+database/
