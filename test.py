@@ -55,7 +55,8 @@ def main():
         output_unit = "m",
         constant_whitelist = ["1", "2", "pi"],
         constant_map = {"1": 1, "2": 2, "pi": np.pi},
-        auto_polish = True,
+        input_description = "这是一个模拟的物理过程，A为幅值，gamma和omega为速率参数，t为时间，x为观测量。",
+        auto_polish = False,
         generate_fuzzy = True,
         perform_unit_validation = True,
         optimization_method = "L-BFGS-B",
@@ -69,7 +70,7 @@ def main():
     ideasearcher.set_program_name("IdeaSearch Fitter Test")
     ideasearcher.set_database_path("database") # Ensure this directory exists
     ideasearcher.set_api_keys_path("api_keys.json")
-    ideasearcher.set_models(["gpt-4o-mini"]) # Use your desired model
+    ideasearcher.set_models(["gpt-5-mini"]) # Use your desired model
 
     ideasearcher.set_record_prompt_in_diary(True) # Optional: Record prompts in the diary log
 
