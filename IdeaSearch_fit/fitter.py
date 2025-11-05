@@ -413,9 +413,7 @@ class IdeaSearchFitter:
     )-> None:
         
         if not os.path.isdir(result_path):
-            raise ValueError(translate(
-                "【IdeaSearchFitter】初始化时出错：result_path 应指向一存在的文件夹，用于存放帕累托前沿等拟合结果！"
-            ))
+            os.makedirs(result_path, exist_ok=True)
         
         if (data is None and data_path is None) or \
             (data is not None and data_path is not None):  

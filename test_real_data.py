@@ -6,9 +6,14 @@ from IdeaSearch import IdeaSearcher
 from IdeaSearch_fit import IdeaSearchFitter
 from load_data import load_ccp_data, load_hcp_data
 
-SYSTEM_DESCRIPTION = """This formula describes the relationship between (concentration of Li+, ionic potential) and the electric conductivity of a {crystal_structure} system.
-The target variable sigma represents the electric conductivity, while the input variables c and phi denote the concentration of Li+ and the ionic potential, respectively.
-The fitting error is NOT the most important criterion. The formula you give should be **neat** and **physically meaningful**.
+SYSTEM_DESCRIPTION = """Analyze the relationship between Li+ concentration (c), ionic potential (phi), and ionic conductivity (σ) in a Li+ {crystal_structure} crystalline material.
+
+**Task**: Propose a formula for σ = f(c, φ).
+
+**Requirements**:
+1. Neat: do not include unnecessary complexity to prevent overfitting.
+2. Physically meaningful: start from first principles.
+3. Empirically valid: ensure the formula is consistent with available data.
 """
 
 def test_ccp_data():
@@ -33,6 +38,7 @@ def test_ccp_data():
         input_description=SYSTEM_DESCRIPTION.format(crystal_structure="CCP"),
         auto_polish=False,
         generate_fuzzy=True,
+        fuzzy_translator="gpt-4o",  # 用于将理论翻译成数学公式的模型
         perform_unit_validation=False,  # 如果都是无量纲可以关闭
         optimization_method="L-BFGS-B",
         optimization_trial_num=10,
@@ -43,7 +49,7 @@ def test_ccp_data():
     ideasearcher.set_program_name("CCP Data Fitting Test")
     ideasearcher.set_database_path("database")
     ideasearcher.set_api_keys_path("api_keys.json")
-    ideasearcher.set_models(["gpt-5-mini"])
+    ideasearcher.set_models(["gpt-5-mini", "gpt-4o"])  # 用于生成理论草稿的模型
     ideasearcher.set_record_prompt_in_diary(True)
     
     # 4. 绑定 Fitter
@@ -96,17 +102,18 @@ def test_hcp_data():
     
     # 2. 初始化 IdeaSearchFitter
     fitter = IdeaSearchFitter(
-        result_path="results",
+        result_path="results/hcp_task_requirements_more_cycles",
         data=data,
         variable_names=["c", "phi"],
         variable_units=["mol L^-1", "V"],  # c为浓度(mol/L), phi为离子势(伏特)
         output_name="sigma",
         output_unit="S m^-1",  # 电导率单位: 西门子/米
         constant_whitelist=["1", "2", "pi"],
-        constant_map={"1": 1, "2": 2, "pi": np.pi},
+        constant_map={"e": np.e, "1": 1, "2": 2, "pi": np.pi, "kB": 1.380649e-23, "T": 300},
         input_description=SYSTEM_DESCRIPTION.format(crystal_structure="HCP"),
         auto_polish=False,
         generate_fuzzy=True,
+        fuzzy_translator="gpt-4o",  # 用于将理论翻译成数学公式的模型
         perform_unit_validation=False,
         optimization_method="L-BFGS-B",
         optimization_trial_num=10,
@@ -117,15 +124,15 @@ def test_hcp_data():
     ideasearcher.set_program_name("HCP Data Fitting Test")
     ideasearcher.set_database_path("database")
     ideasearcher.set_api_keys_path("api_keys.json")
-    ideasearcher.set_models(["gpt-5-mini"])
+    ideasearcher.set_models(["gpt-5-mini", "gpt-4o", "gpt-4.1"])  # 用于生成理论草稿的模型
     ideasearcher.set_record_prompt_in_diary(True)
     
     # 4. 绑定 Fitter
     ideasearcher.bind_helper(fitter)
     
     # 5. 执行进化搜索
-    island_num = 3
-    cycle_num = 10
+    island_num = 5
+    cycle_num = 30
     unit_interaction_num = 3
     
     for _ in range(island_num):
